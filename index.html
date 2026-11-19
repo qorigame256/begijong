@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BEGI雀</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="home" class="screen">
+  <div class="home-card">
+    <h1 class="title">BEGI雀</h1>
+    <div class="seg host-only" id="lengthSeg">
+      <button type="button" data-v="east">東風戦</button>
+      <button type="button" data-v="south">半荘戦</button>
+    </div>
+    <div id="roomBox" class="host-only"></div>
+    <div id="homeRig" class="host-only"></div>
+    <div class="home-btns host-only">
+      <button type="button" id="startBtn" class="bigbtn">対局開始</button>
+      <button type="button" id="roomBtn" class="bigbtn ghost">部屋を作る</button>
+    </div>
+    <div id="guestBox" class="hidden"></div>
+  </div>
+</div>
+
+<div id="game" class="screen hidden">
+  <div id="table">
+    <div id="board"></div>
+    <div id="bubbles"></div>
+  </div>
+  <div id="hud">
+    <div id="netBadge" class="hidden">つなぎ直しています</div>
+    <div id="rigBadge" class="hidden">牌操作あり</div>
+    <button type="button" id="assistBtn">アシスト</button>
+    <button type="button" id="rigBtn">牌操作</button>
+    <button type="button" id="quitBtn">やめる</button>
+  </div>
+  <div id="aux">
+    <button type="button" data-auto="win">自動和了</button>
+    <button type="button" data-auto="tsumogiri">ツモ切り</button>
+    <button type="button" data-auto="noCall">鳴かない</button>
+  </div>
+</div>
+
+<div id="rigModal" class="backdrop hidden">
+  <div class="card wide">
+    <div id="modalRig"></div>
+    <div class="card-foot"><button type="button" id="rigClose" class="bigbtn small">閉じる</button></div>
+  </div>
+</div>
+
+<div id="assistModal" class="backdrop hidden">
+  <div class="card narrow">
+    <div class="as-head">
+      <span class="ttl">アシスト</span>
+      <label class="chk"><input type="checkbox" id="assistOn">使う</label>
+    </div>
+    <ul class="legend">
+      <li><span class="lg keep"></span>切っても手が後戻りしない牌</li>
+      <li><span class="lg best"></span>その中で、引けば進む牌がいちばん多い牌</li>
+      <li><span class="lg safe"></span>リーチした人に当たらない牌</li>
+      <li><span class="lg adv"></span>鳴くと手が進む（ポン・チーのボタン）</li>
+    </ul>
+    <div class="card-foot"><button type="button" id="assistClose" class="bigbtn small">閉じる</button></div>
+  </div>
+</div>
+
+<div id="overlay" class="backdrop hidden"></div>
+
+<script src="js/calc.js"></script>
+<script src="js/rig.js"></script>
+<script src="js/game.js"></script>
+<script src="js/cpu.js"></script>
+<script src="js/assist.js"></script>
+<script src="js/table.js"></script>
+<script src="js/config.js"></script>
+<script src="js/net.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
