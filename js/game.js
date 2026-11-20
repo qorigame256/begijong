@@ -186,22 +186,17 @@
       }
       return o;
     }
-    /** 立直後の暗槓: ツモった牌で、待ちも面子の読み方も変わらないときだけ。 */
+    /** 立直後の暗槓: ツモった牌で、待ちが変わらないときだけ（面子の読み方は変わってもよい。雀魂の段位戦。仕様書 3章）。 */
     _riichiAnkanOk(seat, k) {
       const r = this.r;
-      if (r.drawn === null || k !== kindOf(r.drawn)) return false;
+      if (r.drawn === null || k !== kindOf(r.drawn)) return false; // 送り槓は不可
       const hand = r.hands[seat], nm = r.melds[seat].length;
       const c13 = countsOf(hand); c13[k]--;
       const before = waitsOf(c13, nm);
+      // ツモった牌が当たり牌なら、槓するとその待ちが無くなる（槓のあとの手の数え方では、4枚とも晒した牌も待ちに出てしまうので先に外す）
+      if (!before.length || before.includes(k)) return false;
       const cAfter = countsOf(hand); cAfter[k] -= 4;
-      const after = waitsOf(cAfter, nm + 1);
-      if (before.join() !== after.join()) return false;
-      for (const w of before) {
-        const cc = c13.slice(); cc[w]++;
-        const decs = MJ.decompositions(cc, 4 - nm);
-        if (!decs.length || !decs.every(d => d.sets.some(s => s.type === "tri" && s.tile === k))) return false;
-      }
-      return true;
+      return before.join() === waitsOf(cAfter, nm + 1).join();
     }
 
     /** 席 seat の待ち牌の種類（手番でないとき＝手が 13 − 3×副露 枚のとき）。 */

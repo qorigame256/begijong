@@ -112,9 +112,10 @@ button { font-family: inherit; color: inherit; }
 .river .tile.last .face { outline: calc(var(--u) * 0.3) solid #ffd76a; outline-offset: calc(var(--u) * -0.05); animation: lastglow 1s ease-in-out infinite alternate; animation-delay: var(--sync, 0s); }
 @keyframes lastglow { from { outline-color: rgba(255, 215, 106, .55); } to { outline-color: rgba(255, 215, 106, 1); } }
 /* 鳴きを聞かれている捨て牌（仕様書 6章⑭）: 橙の太い縁と、右から指す矢印（最後の捨て牌は列の右端なので、右はいつも空いている）。
-   牌は大きくしない。縁は牌の大きさぴったり（外側の端が牌の端にそろう。本人決定 2026-11-20） */
+   牌は大きくしない。縁は牌の大きさぴったり（外側の端が牌の端にそろう。本人決定 2026-11-20）。
+   #board を付けて、同じ種類の牌の光（#board .tile.same）が重なっても橙の縁と明滅のままにする（本人決定 2026-11-20） */
 .river .tile.ask { z-index: 3; }
-.river .tile.ask .face { outline: calc(var(--u) * 0.4) solid #ff9d3c; outline-offset: calc(var(--u) * -0.4); animation: askglow .6s ease-in-out infinite alternate; animation-delay: var(--sync, 0s); }
+#board .river .tile.ask .face { outline: calc(var(--u) * 0.4) solid #ff9d3c; outline-offset: calc(var(--u) * -0.4); animation: askglow .6s ease-in-out infinite alternate; animation-delay: var(--sync, 0s); }
 @keyframes askglow { from { outline-color: rgba(255, 157, 60, .6); } to { outline-color: #ffc477; } }
 .river .tile .ask-mk {
   position: absolute; top: 50%; left: calc(100% + var(--u) * 0.7); margin-top: calc(var(--u) * -0.9); pointer-events: none;
@@ -153,7 +154,8 @@ button { font-family: inherit; color: inherit; }
 }
 .plate .wind { font-family: var(--serif); font-weight: 700; font-size: calc(var(--u) * 2.9); color: #cfd8d3; }
 .plate.oya .wind { color: #ff9d73; }
-.plate .score { font-size: calc(var(--u) * 2.35); font-variant-numeric: tabular-nums; letter-spacing: .05em; color: #f4efe2; }
+/* 点数の幅は5桁分に固定して左にそろえる（点差の「+7100」「-17000」や4桁の点数でも風の文字が動かないように。6文字目は右へはみ出す） */
+.plate .score { flex: none; width: calc(5ch + .25em); white-space: nowrap; text-align: left; font-size: calc(var(--u) * 2.35); font-variant-numeric: tabular-nums; letter-spacing: .05em; color: #f4efe2; }
 /* 点差（中央の四角を押したとき。その人の点数 − 自分の点数） */
 .plate .score.diff.plus { color: #7fe0a8; } /* 色は結果の板の増減（.scores .delta）にそろえる */
 .plate .score.diff.minus { color: #ff8f8f; }
@@ -203,12 +205,13 @@ button { font-family: inherit; color: inherit; }
 /* 手牌の上の帯（シャンテン数の札・フリテン・進む牌・待ち・狙える役） */
 .assist {
   position: absolute; left: calc(var(--u) * 9); bottom: calc(var(--u) * 11.4); max-width: calc(var(--u) * 57);
-  display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--u) * 0.6) calc(var(--u) * 0.9);
+  /* 折り返したときの段の間は、残り枚数の丸が牌の上へはみ出す分（--nb の半分）より広くする */
+  display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--u) * (var(--nb) / 2 - 0.05)) calc(var(--u) * 0.9);
   font-size: calc(var(--u) * 1.6); line-height: 1.2; color: #e9dfc4; z-index: 4; pointer-events: none;
   text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
 }
 .assist > * { pointer-events: auto; flex: none; }
-.a-detail { display: inline-flex; flex-wrap: wrap; align-items: center; gap: calc(var(--u) * 0.6) calc(var(--u) * 0.9); max-width: 100%; }
+.a-detail { display: inline-flex; flex-wrap: wrap; align-items: center; gap: calc(var(--u) * (var(--nb) / 2 - 0.05)) calc(var(--u) * 0.9); max-width: 100%; }
 .a-badge, .a-pill, .a-yaku {
   padding: calc(var(--u) * 0.3) calc(var(--u) * 1); border-radius: 99px; white-space: nowrap;
   background: rgba(8, 20, 18, .82); border: 1px solid rgba(216, 181, 106, .55);
@@ -220,15 +223,18 @@ button { font-family: inherit; color: inherit; }
 .a-yaku.sure { border-style: solid; background: rgba(90, 70, 20, .82); color: var(--gold2); }
 .a-lab { font-size: calc(var(--u) * 1.4); color: #a9b8b2; }
 .a-sum { font-variant-numeric: tabular-nums; color: var(--gold2); }
-.a-uke, .a-wait { position: relative; display: inline-flex; align-items: center; gap: calc(var(--u) * 0.7); }
-.a-uke { margin-right: calc(var(--u) * 0.5); }
+/* --nb: 残り枚数の丸の大きさ（u の倍数）。丸の左端は牌の幅 2.5u のうち 1.7u の位置、丸の中心は牌の上の縁。
+   丸が大きいほど右へはみ出すので、右の点数・次の牌との間（gap・margin-right）も --nb から決める */
+.assist { --nb: 2.7; } /* 2.7 は本人決定 2026-11-20（1.5・1.9・2.3・2.7 の比較画像から。前は 1.5） */
+.a-uke, .a-wait { position: relative; display: inline-flex; align-items: center; gap: calc(var(--u) * (var(--nb) - 0.8)); }
+.a-uke { margin-right: calc(var(--u) * (var(--nb) - 1)); }
 .assist .tile { --w: 2.5; }
 .assist .tile .face { box-shadow: 0 calc(var(--u) * 0.15) 0 #b8ad8c, 0 calc(var(--u) * 0.3) calc(var(--u) * 0.3) rgba(0, 0, 0, .5); }
 /* 残り枚数（牌の右上に重ねる） */
 .a-uke i, .a-wait i {
-  position: absolute; left: calc(var(--u) * 1.7); top: calc(var(--u) * -0.6);
-  min-width: calc(var(--u) * 1.5); height: calc(var(--u) * 1.5); line-height: calc(var(--u) * 1.5); padding: 0 calc(var(--u) * 0.2);
-  border-radius: 99px; text-align: center; font-style: normal; font-size: calc(var(--u) * 1.1); font-variant-numeric: tabular-nums;
+  position: absolute; left: calc(var(--u) * 1.7); top: calc(var(--u) * (0.15 - var(--nb) / 2));
+  min-width: calc(var(--u) * var(--nb)); height: calc(var(--u) * var(--nb)); line-height: calc(var(--u) * var(--nb)); padding: 0 calc(var(--u) * var(--nb) * 0.13);
+  border-radius: 99px; text-align: center; font-style: normal; font-size: calc(var(--u) * var(--nb) * 0.73); font-variant-numeric: tabular-nums;
   color: #f2ead8; background: #0b1513; border: 1px solid rgba(216, 181, 106, .7); text-shadow: none;
 }
 .a-wait { cursor: pointer; }
@@ -440,7 +446,7 @@ button { font-family: inherit; color: inherit; }
 .scores .tag { font-size: 12px; color: var(--gold2); min-height: 1.2em; }
 .rank { display: grid; gap: 8px; }
 .rank .line { display: grid; grid-template-columns: 64px 1fr auto 90px; align-items: baseline; gap: 12px; padding: 12px 16px; border-radius: 12px; background: rgba(0, 0, 0, .28); border: 1px solid rgba(255, 255, 255, .08); }
-.rank .line.first { border-color: rgba(216, 181, 106, .7); background: rgba(216, 181, 106, .1); }
+.rank .line.me { border-color: rgba(216, 181, 106, .7); background: rgba(216, 181, 106, .1); } /* 金の枠は自分の行（1位ではない。本人決定 2026-11-20） */
 .rank .no { font-family: var(--serif); font-weight: 900; font-size: 24px; color: var(--gold2); }
 .rank .nm { font-size: 17px; }
 .rank .sc { font-size: 22px; font-variant-numeric: tabular-nums; }

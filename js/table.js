@@ -10,6 +10,7 @@
  *   t.submit(seat, { t: "next" })              局の結果を見終えた
  *   t.setConnected(seat, bool)                 切断中の人の席は CPU が代わりに打つ。戻ったらいまの状態を送り直す
  *   t.resync(seat)                             その席へいまの状態を送り直す
+ *   t.endPackets()                             終局したとき切れていた人の席の、最後の packet {席: packet}（戻ってきたら送る）
  *   t.setRig(config) / t.stop()
  *
  * 人の席へ送る packet（JSON にできる値だけ。ほかの席の手・袋の中身は入れない）:
@@ -175,6 +176,17 @@
       if (!this._isHuman(seat) || !this.g.r) return;
       this.evSent[seat] = this.g.events.length;
       this._sendTo(seat, true);
+    }
+    /** 終局したとき切れていた人の席へ、戻ってきたら送る最後の状態 {席: packet}（最終順位を見せるため。仕様書 5章）。終局していなければ空。 */
+    endPackets() {
+      const out = {};
+      if (this.g.phase !== "gameEnd") return out;
+      for (let s = 0; s < 4; s++) {
+        if (!this.human[s] || this.connected[s]) continue;
+        this.evSent[s] = this.g.events.length; // いない間のできごとは飛ばす（resync と同じ）
+        out[s] = this._packet(s, true);
+      }
+      return out;
     }
     setRig(config) {
       this.g.rig.setConfig(config);

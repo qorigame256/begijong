@@ -209,7 +209,9 @@
   let uiMode = "normal"; // normal | riichi（立直で切る牌を選ぶ）| choose（鳴き方・槓する牌を選ぶ）
   let choices = [];
   let selected = null; // タッチで1回目に選んだ牌
-  let showDiff = false; // 他家の点数の札に、自分との点差を出しているか（中央の四角を押すたびに切り替える）
+  let showDiff = false; // 他家の点数の札に、自分との点差を出しているか（中央の四角を押すと出し、DIFF_MS たつと点数に戻る）
+  let diffTimer = null;
+  const DIFF_MS = 3000; // 点差を出してから点数に戻るまで（仕様書 6.5章）
   // アシスト（仕様書 6章）。計算は assist.js が、届いた view だけから行う
   let guestAssist = cleanAssist(null); // 参加者: 部屋主から届いた自分の席の入・切
   const myAssist = () => (mode === "guest" ? guestAssist : settings.assistSeats[0]); // 部屋主・1人用の自分は席0
@@ -219,6 +221,7 @@
   const riichiMemo = new Map(); // 立直して切ったときの待ち（切る牌の id ごと。packet が変わったら捨てる）
   const auto = { win: false, tsumogiri: false, noCall: false }; // 補助ボタン。局が始まるたびに切へ戻す
   const DEF_CLS = ["", "kabe", "suji", "gen"], DEF_LABEL = ["", "壁", "スジ", "現物"]; // 手牌の下の守りの印（Assist.DEF の値ごと）
+  const UKE_TILES_MAX = 24; // 帯の「進む牌」に牌を並べる上限の枚数。25枚以上は枚数だけ（仕様書 6章）
   // 期待値（仕様書 6章⑬）。自分が切る番ごとに、裏の Worker（ev-worker.js）で計算する
   const EV_MAX_SHANTEN = 3; // これより遠い手は計算しない（計算が終わらないことが多い）
   let ev = null; // いまの問いの期待値 {id, ask, session, done, map: Map<Assist.evKey, {ev, win, choice}> | null, top: Set<Assist.evKey> | null}
@@ -249,9 +252,9 @@
     lastAsk = sentAsk = -1;
     shownRound = confirmedRound = resultRound = -1;
     finalShown = false;
-    uiMode = "normal"; choices = []; selected = null; showDiff = false;
+    uiMode = "normal"; choices = []; selected = null; setDiff(false);
     asst = callAsst = null; hoverId = hoverKind = focusWait = null;
-    ev = null;
+    stopEv();
     auto.win = auto.tsumogiri = auto.noCall = false;
     drawAux();
     bubbles.innerHTML = "";
@@ -267,6 +270,7 @@
   function closeGame() {
     session++;
     port = null;
+    stopEv();
     hideOverlay();
     $("#rigModal").classList.add("hidden");
     $("#assistModal").classList.add("hidden");
@@ -427,7 +431,7 @@
   // ---------- 期待値（裏の Worker で計算する。仕様書 6章⑬） ----------
   /** いまの問いの期待値を頼む（同じ問いで頼み済みなら何もしない）。切る牌のヒントが切・切る番でない・手が遠いときは出さない。 */
   function requestEv() {
-    if (!(myAssist().cut && asst && asst.turn && canInput() && v.options.kind === "turn" && asst.shanten <= EV_MAX_SHANTEN)) { ev = null; return; }
+    if (!(myAssist().cut && asst && asst.turn && canInput() && v.options.kind === "turn" && asst.shanten <= EV_MAX_SHANTEN)) return stopEv();
     if (ev && ev.ask === pkt.ask && ev.session === session) return;
     ev = null;
     let inp = null;
@@ -443,6 +447,11 @@
     ev = { id: ++evSeq, ask: pkt.ask, session, done: false, map: null, top: null };
     evBusy = true;
     evWorker.postMessage({ id: ev.id, input: inp.input, exclude: inp.exclude });
+  }
+  /** 期待値を出さない（切る牌のヒントを切にした・切る番が終わった・対局を閉じた）。計算中なら Worker ごと止める（仕様書 6章⑬「切にすると計算もしない」）。 */
+  function stopEv() {
+    ev = null;
+    if (evWorker && evBusy) { evWorker.terminate(); evWorker = null; evBusy = false; }
   }
   /** Worker から結果が届いた（d が null なら計算に失敗した）。 */
   function evDone(d) {
@@ -474,9 +483,13 @@
     drawAux();
     if (port && v) render();
   }
-  /** いま触れている「切る牌」の計算結果。触れていない・切れない牌、切る牌のヒントが切なら null。 */
+  /**
+   * いま触れている「切る牌」の計算結果。触れていない・切れない牌なら null。
+   * 切る牌のヒントが切なら、手の状態が入で立直の牌を選んでいる間だけ（立直で切る牌ごとの待ち。仕様書 6章 A2）。
+   */
   function focusDiscard() {
-    if (!myAssist().cut || !asst || !asst.discards || !canInput()) return null;
+    const a = myAssist();
+    if (!(a.cut || (a.hand && uiMode === "riichi")) || !asst || !asst.discards || !canInput()) return null;
     const o = v.options;
     if (o.kind !== "turn" || uiMode === "choose") return null;
     const id = hoverId !== null ? hoverId : selected;
@@ -515,13 +528,16 @@
     if (asst && a.hand) h += `<span class="a-badge ${asst.shanten <= 0 ? "tenpai" : ""}">${asst.shanten <= 0 ? "テンパイ" : asst.shanten + "シャンテン"}</span>`;
     if (v.furiten && v.waits.length) h += '<span class="a-pill bad">フリテン</span>';
     if (!asst) return h;
-    const f = focusDiscard(); // 切る牌のヒントが切なら null
+    const f = focusDiscard();
     if (f) {
-      // 切る牌に触れている間: 切ったあとの待ち、または引けば進む牌
-      if (f.d.shanten > asst.shanten) h += '<span class="a-pill bad">シャンテン戻し</span>';
-      h += evHtml(f.d);
-      if (f.tenpai) return h + (f.tenpai.furiten ? '<span class="a-pill bad">フリテンになる</span>' : "") + waitsHtml(f.tenpai);
-      const uke = f.d.uke.filter(u => u.left > 0);
+      // 切る牌に触れている間: 切ったあとの待ち、または引けば進む牌。
+      // 進む牌・シャンテン戻し・期待値は「切る牌のヒント」、切ると聴牌になる牌の待ち・役・点数は「手の状態」（仕様書 6章 A2）
+      if (a.cut && f.d.shanten > asst.shanten) h += '<span class="a-pill bad">シャンテン戻し</span>';
+      if (a.cut) h += evHtml(f.d);
+      if (f.tenpai && a.hand) return h + (f.tenpai.furiten ? '<span class="a-pill bad">フリテンになる</span>' : "") + waitsHtml(f.tenpai);
+      if (!a.cut) return h;
+      // 進む牌が多いとき（UKE_TILES_MAX 枚を超える）は、牌を並べず枚数だけ（本人決定 2026-11-20）
+      const uke = f.d.total > UKE_TILES_MAX ? [] : f.d.uke.filter(u => u.left > 0);
       return h + `<span class="a-lab">進む牌</span>${uke.map(u => `<span class="a-uke">${kindTile(u.k)}<i>${u.left}</i></span>`).join("")}<span class="a-sum">${f.d.total}枚</span>`;
     }
     if (!a.hand) return h;
@@ -568,7 +584,9 @@
     const btn = (act, label, cls) => b.push(`<button type="button" class="abtn ${cls}" data-act="${act}">${label}</button>`);
     const adv = list => (callAsst && list.some(c => c.advances) ? " adv" : ""); // 鳴くと手が進む印
     if (uiMode === "choose") {
-      choices.forEach((c, i) => b.push(`<button type="button" class="abtn choice${c.adv ? " adv" : ""}" data-act="choose" data-i="${i}">${c.tiles.map(t => tile(t)).join("")}</button>`));
+      // 鳴くと進む印は、描くたびにいまの計算（callAsst。守りと鳴きが切なら null）から決める（選んでいる途中で切り替えられてもすぐ効く）
+      const advOf = c => !!(c.call && callAsst && callAsst[c.call[0]][c.call[1]] && callAsst[c.call[0]][c.call[1]].advances);
+      choices.forEach((c, i) => b.push(`<button type="button" class="abtn choice${advOf(c) ? " adv" : ""}" data-act="choose" data-i="${i}">${c.tiles.map(t => tile(t)).join("")}</button>`));
       btn("cancel", "戻る", "");
     } else if (uiMode === "riichi") {
       btn("cancel", "戻る", "");
@@ -645,8 +663,8 @@
       case "riichi": uiMode = "riichi"; selected = null; return render();
       case "cancel": uiMode = "normal"; choices = []; return render();
       case "choose": return choices[+i] && submit(choices[+i].action);
-      case "pon": return choose(o.pon.map((t, n) => ({ tiles: t, adv: !!(callAsst && callAsst.pon[n].advances), action: { type: "pon", tiles: t } })));
-      case "chi": return choose(o.chi.map((t, n) => ({ tiles: t.slice().sort((a, b) => a - b), adv: !!(callAsst && callAsst.chi[n].advances), action: { type: "chi", tiles: t } })));
+      case "pon": return choose(o.pon.map((t, n) => ({ tiles: t, call: ["pon", n], action: { type: "pon", tiles: t } })));
+      case "chi": return choose(o.chi.map((t, n) => ({ tiles: t.slice().sort((a, b) => a - b), call: ["chi", n], action: { type: "chi", tiles: t } })));
       case "kan": {
         const all = v.hand.concat(v.drawn !== null ? [v.drawn] : []);
         return choose(o.ankan.map(k => ({ tiles: [all.find(t => kindOf(t) === k)], action: { type: "ankan", kind: k } }))
@@ -676,9 +694,23 @@
     if (w) return setFocusWait(+w.dataset.wait);
     const t = e.target.closest(".pos0 .hand .tile[data-id]");
     if (t) return onTile(+t.dataset.id, e.pointerType);
-    // 中央の四角（四隅の点数の札も中央の四角の中にある）: 点数 ⇔ 自分との点差
-    if (e.target.closest(".center, .plate")) { showDiff = !showDiff; render(); }
+    // 中央の四角（四隅の点数の札も中央の四角の中にある）: 自分との点差を出す。出している間に押すと、すぐ点数に戻る
+    if (e.target.closest(".center, .plate")) { setDiff(!showDiff); render(); }
   });
+  /** 点差を出す・やめる。出したら DIFF_MS たって点数に戻す（盤面を描き直す）。 */
+  function setDiff(on) {
+    clearTimeout(diffTimer);
+    diffTimer = null;
+    showDiff = on;
+    if (!on) return;
+    const my = session;
+    diffTimer = setTimeout(() => {
+      diffTimer = null;
+      if (my !== session || !showDiff) return;
+      showDiff = false;
+      if (port && v && v.hand) render();
+    }, DIFF_MS);
+  }
   // マウスが乗っている牌: 自分の手牌なら帯に「切ったあと」を出し、どの牌でも同じ種類の牌を光らせる（タッチは1回目のタップで選んだ牌が同じ役目）
   function setHover(id, k) {
     const idChanged = id !== hoverId, kChanged = k !== hoverKind;
@@ -839,7 +871,7 @@
   }
   function showFinal() {
     const f = v.final;
-    const lines = f.order.map((s, i) => `<div class="line ${i === 0 ? "first" : ""}" data-seat="${s}">
+    const lines = f.order.map((s, i) => `<div class="line ${s === ME ? "me" : ""}" data-seat="${s}">
       <span class="no">${i + 1}位</span><span class="nm">${esc(v.names[s])}<span class="rt"></span></span>
       <span class="sc">${f.scores[s]}</span><span class="pt">${f.points[i] > 0 ? "+" : ""}${f.points[i].toFixed(1)}</span></div>`).join("");
     const my = session;
@@ -941,6 +973,7 @@
       }
       room.playing = true;
       room.gid++;
+      room.missed.clear(); // 前の対局の最後の画面は、次の対局を始めたら送らない
     } else game.names = ["あなた", "CPU 下家", "CPU 対面", "CPU 上家"];
     const my = { gid: room ? room.gid : 0 };
     openGame(msg => table && table.submit(0, msg));
@@ -950,7 +983,14 @@
         if (seat === 0) receive(clone(p));
         else if (room && room.seatId[seat]) room.net.send({ t: "state", gid: my.gid, p }, room.seatId[seat]);
       },
-      onEnd(sum) { if (room) { recordStats(sum, my.gid); room.playing = false; dropOffline(); sendLobby(); } }, // 1人用は戦績に数えない
+      onEnd(sum) { // 1人用は戦績に数えない
+        if (!room) return;
+        try { recordStats(sum, my.gid); } catch (e) { console.error(e); } // 戦績でつまずいても、部屋は対局の終わりへ進める
+        // 終局したとき切れていた人には、戻ってきたら最後の画面を1回だけ送る（仕様書 5章）
+        const ended = table.endPackets();
+        for (const s of Object.keys(ended)) if (room.seatId[s]) room.missed.set(room.seatId[s], { gid: my.gid, p: ended[s] });
+        room.playing = false; dropOffline(); sendLobby();
+      },
     });
     table.start();
     if (room) sendLobby();
@@ -997,6 +1037,13 @@
     noroom: "部屋が見つかりません", taken: "この部屋は使えません", full: "満員です",
     closed: "部屋が閉じられました", replaced: "ほかの画面で開いています", bad: "接続できません",
   };
+  const BADGE_RETRY = "つなぎ直しています";
+  /** 右上の接続の札（text が空なら隠す）。 */
+  function setBadge(text) {
+    const el = $("#netBadge");
+    if (text) el.textContent = text;
+    el.classList.toggle("hidden", !text);
+  }
 
   function openRoom(saved) {
     if (room || !relayUrl()) return;
@@ -1004,6 +1051,7 @@
       code: saved ? saved.code : randomText(6, "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"),
       key: saved ? saved.key : randomText(32, "abcdefghijklmnopqrstuvwxyz0123456789"),
       members: [], seatId: [null, null, null, null], playing: false, gid: 0, status: "connecting", pick: 0, net: null,
+      missed: new Map(), // 参加者の id → 終局したとき切れていたその人へ送る最後の画面 {gid, p}
     };
     try { sessionStorage.setItem(ROOM_STORE, JSON.stringify({ code: room.code, key: room.key })); } catch (e) { /* 覚えられなくても続ける */ }
     const mine = room;
@@ -1013,7 +1061,7 @@
         if (room !== mine) return;
         if (st === "error") return closeRoom(STATUS_TEXT[code] || STATUS_TEXT.bad);
         room.status = st;
-        $("#netBadge").classList.toggle("hidden", st === "open");
+        setBadge(st === "open" ? "" : BADGE_RETRY);
         drawHome();
       },
       onReady(m) {
@@ -1034,7 +1082,7 @@
     stopTable();
     r.net.sys({ sys: "close" });
     r.net.close();
-    $("#netBadge").classList.add("hidden");
+    setBadge("");
     try { sessionStorage.removeItem(ROOM_STORE); } catch (e) { /* 何もしない */ }
     homeNote = message || "";
     mode = "solo";
@@ -1051,6 +1099,12 @@
       m.online = true;
       const seat = gameSeatOf(id);
       if (seat > 0 && table) { table.setConnected(seat, true); table.resync(seat); } // 戻ってきた人へ、いまの状態を送り直す
+      else if (!room.playing && room.missed.has(id)) {
+        // 切れている間に対局が終わった人へ、最後の画面を1回だけ送る（部屋の様子より先に送る。参加者は対局が終わった画面なら部屋へ戻らない）
+        const x = room.missed.get(id);
+        room.missed.delete(id);
+        room.net.send({ t: "state", gid: x.gid, p: x.p }, id);
+      }
       sendLobby();
       return drawHome();
     }
@@ -1090,7 +1144,7 @@
     if (!room) return;
     const names = [cleanName(settings.name, "部屋主")];
     for (let s = 1; s < 4; s++) names.push(guestNameAt(s));
-    const players = {};
+    const players = Object.create(null); // 「__proto__」などの名前も、ただの名前として入れる
     for (const n of [names[0]].concat(room.members.map(m => m.name))) if (stats.players[n]) players[n] = stats.players[n];
     const shared = { stats: { v: 1, players }, rated: lastRated && lastRated.gid === room.gid ? lastRated : null };
     for (const m of room.members) {
@@ -1114,21 +1168,33 @@
   function joinRoom() {
     if (guest || !JOIN_CODE || !relayUrl()) return;
     mode = "guest";
-    guest = { net: null, status: "connecting", lobby: null, gid: -1 };
+    guest = { net: null, status: "connecting", lobby: null, gid: -1, hostOn: true };
     try { sessionStorage.setItem(JOIN_STORE, JOIN_CODE); } catch (e) { /* 覚えられなくても続ける */ }
     const mine = guest;
     const hello = () => guest.net.send({ t: "hello", name: cleanName(settings.name, "ゲスト") });
+    // 右上の札: 自分がつなぎ直している間と、部屋主の接続が切れている間（仕様書 5章）
+    const badge = () => setBadge(guest.status !== "open" ? BADGE_RETRY : guest.hostOn ? "" : "部屋主を待っています");
     guest.net = Net.open({
       url: relayUrl(), room: JOIN_CODE, role: "guest", id: guestId(),
       onStatus(st, code) {
         if (guest !== mine) return;
         if (st === "error") return leaveRoom(STATUS_TEXT[code] || STATUS_TEXT.bad);
         guest.status = st;
-        $("#netBadge").classList.toggle("hidden", st === "open");
+        badge();
         drawHome();
       },
-      onReady() { if (guest === mine) hello(); },
-      onSys(m) { if (guest === mine && m.sys === "host" && m.on) hello(); },
+      onReady(m) {
+        if (guest !== mine) return;
+        guest.hostOn = !!m.host;
+        badge();
+        hello();
+      },
+      onSys(m) {
+        if (guest !== mine || m.sys !== "host") return;
+        guest.hostOn = !!m.on;
+        badge();
+        if (m.on) hello();
+      },
       onData(d) {
         if (guest !== mine || !d || typeof d !== "object") return;
         if (d.t === "lobby") {
@@ -1156,7 +1222,7 @@
     g.net.send({ t: "bye" });
     g.net.close();
     try { sessionStorage.removeItem(JOIN_STORE); } catch (e) { /* 何もしない */ }
-    $("#netBadge").classList.add("hidden");
+    setBadge("");
     homeNote = message || "";
     goHome();
   }

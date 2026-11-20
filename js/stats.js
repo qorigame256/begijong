@@ -28,7 +28,8 @@
   const count = x => Math.max(0, Math.floor(num(x, 0)));
   function blank() { return { rate: START, games: 0, ranks: [0, 0, 0, 0], points: 0, rounds: 0, wins: 0, dealins: 0 }; }
   function normalize(s) {
-    const out = { v: 1, players: {} };
+    // players は継承を持たない辞書にする（「constructor」「__proto__」などの名前で Object の持ち物を拾わないため）
+    const out = { v: 1, players: Object.create(null) };
     const src = s && typeof s === "object" && s.players && typeof s.players === "object" ? s.players : {};
     for (const name of Object.keys(src)) {
       const p = src[name];

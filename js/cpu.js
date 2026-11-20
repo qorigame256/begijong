@@ -81,7 +81,7 @@
 
   function decideTurn(view, o, level, rng) {
     if (o.tsumo) return { type: "tsumo" };
-    if (o.kyushu) return { type: "kyushu" };
+    // 九種九牌は宣言しない（本人決定 2026-11-20。仕様書 4.5章）。o.kyushu があっても、ふつうに打って進める
     const hand = myHand(view), nm = view.melds[view.seat].length;
     const c = countsOf(hand);
     const sNow = MJ.shanten(c, nm);
