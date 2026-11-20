@@ -60,10 +60,12 @@ button { font-family: inherit; color: inherit; }
     calc(var(--u) * var(--w) * -0.2) 0 calc(var(--u) * var(--w) * 0.14) rgba(0, 0, 0, .5);
 }
 .tile.dora .face::before {
-  content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
-  background: linear-gradient(115deg, transparent 30%, rgba(255, 226, 140, .55) 48%, transparent 62%);
+  content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none; border-radius: inherit;
+  /* no-repeat を外さない: 帯の絵が繰り返し並ぶと、2本目の帯が牌の右側まで来たところで動きが最初に戻り、光が途切れて見える */
+  background: linear-gradient(115deg, transparent 32%, rgba(255, 214, 110, .5) 42%, rgba(255, 250, 225, .9) 50%, rgba(255, 214, 110, .5) 58%, transparent 68%) no-repeat;
   background-size: 260% 100%;
-  animation: shine 2.6s linear infinite;
+  box-shadow: inset 0 0 calc(var(--u) * var(--w) * 0.16) rgba(255, 196, 60, .75); /* 光の帯が通っていない間も、ドラと分かる金色の縁 */
+  animation: shine 2.2s linear infinite;
 }
 @keyframes shine { from { background-position: 130% 0; } to { background-position: -130% 0; } }
 
@@ -101,6 +103,7 @@ button { font-family: inherit; color: inherit; }
 .river .tile.side .face {
   box-shadow: calc(var(--u) * -0.22) 0 0 #cfc4a3, calc(var(--u) * -0.4) 0 calc(var(--u) * 0.5) rgba(0, 0, 0, .45);
 }
+.river .tile.side { align-self: center; } /* 立直の宣言牌は、列の下端でなく上下の中心に置く */
 .river .tile.tg .face { filter: brightness(.86); }
 .river .tile.last .face { outline: calc(var(--u) * 0.3) solid #ffd76a; outline-offset: calc(var(--u) * -0.05); animation: lastglow 1s ease-in-out infinite alternate; }
 @keyframes lastglow { from { outline-color: rgba(255, 215, 106, .55); } to { outline-color: rgba(255, 215, 106, 1); } }
@@ -426,6 +429,37 @@ button { font-family: inherit; color: inherit; }
 .rig .clr { flex: none; font-size: 12px; padding: 3px 9px; border-radius: 99px; background: none; border: 1px solid rgba(255, 255, 255, .25); color: #a9b8b2; cursor: pointer; }
 .rig .palette { margin-top: 12px; padding: 10px 12px; border-radius: 14px; background: rgba(0, 0, 0, .35); border: 1px solid rgba(216, 181, 106, .45); display: flex; flex-wrap: wrap; gap: 6px 14px; justify-content: center; }
 .rig .palette .grp { display: flex; gap: 2px; }
+/* 牌を選ぶ板の「まとめて入れる」ボタン */
+.rig .palette .bulk { flex: 0 0 100%; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 4px; }
+/* 運は6段階。席の枠が狭いときは3つずつ2段にする */
+.rig-seat { container-type: inline-size; }
+.rig .seg.luck { display: grid; grid-template-columns: repeat(6, auto); }
+.rig .seg.luck button { padding: 6px 7px; white-space: nowrap; }
+@container (max-width: 420px) {
+  .rig .seg.luck { grid-template-columns: repeat(3, 1fr); flex: 1; }
+  .rig .seg.luck button:nth-child(4) { border-left: none; }
+  .rig .seg.luck button:nth-child(n + 4) { border-top: 1px solid rgba(216, 181, 106, .25); }
+}
+.rig .tiles-row select { flex: none; font-size: 13px; padding: 4px 6px; }
+/* 和了率の目安の小窓 */
+.rig-head { position: relative; }
+.rig .rates-btn.on { border-color: #ffe08a; color: #fff3cf; }
+.rig .rates {
+  position: absolute; z-index: 6; top: calc(100% + 6px); right: 0; width: min(100%, 300px); padding: 12px 14px; border-radius: 14px;
+  background: linear-gradient(160deg, #173a32 0%, #0d221e 60%, #081513 100%); border: 1px solid rgba(216, 181, 106, .65);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, .7);
+}
+.rig .rates-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-family: var(--serif); font-size: 15px; letter-spacing: .1em; color: var(--gold2); }
+.rig .rates table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.rig .rates th { text-align: left; font-weight: 400; color: #cfd8d3; padding: 4px 8px 4px 0; white-space: nowrap; }
+.rig .rates td { padding: 4px 0; }
+.rig .rates td:nth-child(2) { width: 100%; }
+.rig .rates td:nth-child(2) i { display: block; height: 8px; border-radius: 99px; background: linear-gradient(90deg, #c99c40, #f3dc98); }
+.rig .rates td:last-child { padding-left: 10px; text-align: right; font-variant-numeric: tabular-nums; color: #f4efe2; white-space: nowrap; }
+.rig .rates-note { margin-top: 8px; font-size: 12px; color: #8fa39b; }
+/* はじめの画面の選ぶ行（CPU の強さ） */
+.opt-row { display: flex; align-items: center; gap: 14px; }
+.opt-lab { font-family: var(--serif); font-size: 16px; letter-spacing: .15em; color: var(--gold2); }
 .rig .palette .tile:hover { transform: translateY(-3px); }
 .rig .palette .tile.used { cursor: default; transform: none; }
 .rig .palette .tile.used .face { filter: brightness(.45) saturate(.6); }

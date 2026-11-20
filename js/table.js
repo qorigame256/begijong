@@ -3,7 +3,7 @@
  * 画面も通信も持たない（1人用と部屋主のブラウザ、node のテストで動く）。ブラウザでは window.Table、node では require。
  *
  * 使い方:
- *   t = new Table({ game: Game の opts, humans: [人が座る席], send(seat, packet), timing, onEnd, onError });
+ *   t = new Table({ game: Game の opts, humans: [人が座る席], cpu: CPU の強さ（"weak" | "normal" | "strong"）, send(seat, packet), timing, onEnd, onError });
  *   t.start();
  *   t.submit(seat, { t: "act", ask, action })  人の行動（ask は packet.ask をそのまま返す。古い問いへの答えは捨てる）
  *   t.submit(seat, { t: "next" })              局の結果を見終えた
@@ -25,13 +25,13 @@
   else root.Table = factory(root.Mahjong, root.Cpu);
 })(typeof self !== "undefined" ? self : this, function (Mahjong, Cpu) {
   "use strict";
-  const { Game } = Mahjong;
+  const { Game, mulberry32 } = Mahjong;
 
   // 待ち時間（ミリ秒）
   const TIMING = {
     announce: 1000, // 局の始まりを見せる
-    cpuThink: 520, // CPU がツモってから切るまで
-    afterDiscard: 260, // 打牌のあと、次の人が動くまで
+    cpuThink: 400, // CPU がツモってから切るまで
+    afterDiscard: 200, // 打牌のあと、次の人が動くまで
     afterCall: 100, // CPU だけで鳴き・見送りが決まったあと
     autoDiscard: 600, // 立直後のツモ切り
   };
@@ -62,6 +62,8 @@
   class Table {
     constructor(opts) {
       this.g = new Game(opts.game);
+      this.cpuLevel = Cpu.LEVELS.includes(opts.cpu) ? opts.cpu : "normal"; // CPU の強さ（全席まとめて）
+      this.cpuRng = mulberry32((this.g.seed ^ 0x5bd1e995) >>> 0); // CPU が使う乱数（対局の乱数とは分ける。同じ seed なら同じ打ち方）
       this.send = opts.send;
       this.onEnd = opts.onEnd || null;
       this.onError = opts.onError || null;
@@ -98,7 +100,7 @@
     _auto(seat, o) { return o.kind === "turn" && this.g.r.riichi[seat] > 0 && !o.tsumo && !o.ankan.length; }
     _cpuExtra() {
       const cfg = this.g.rig.config;
-      return { noRonFrom: cfg.enabled ? [0, 1, 2, 3].filter(s => cfg.seats[s].guard) : [] };
+      return { noRonFrom: cfg.enabled ? [0, 1, 2, 3].filter(s => cfg.seats[s].guard) : [], level: this.cpuLevel, rng: this.cpuRng };
     }
     _pendingSeats() {
       const g = this.g;

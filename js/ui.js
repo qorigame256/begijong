@@ -38,9 +38,9 @@
   function loadSettings() {
     try {
       const o = JSON.parse(localStorage.getItem(STORE));
-      if (o) return { length: o.length === "east" ? "east" : "south", rig: Rig.normalize(o.rig), name: cleanName(o.name, ""), assist: o.assist !== false };
+      if (o) return { length: o.length === "east" ? "east" : "south", rig: Rig.normalize(o.rig), name: cleanName(o.name, ""), assist: o.assist !== false, cpu: Cpu.LEVELS.includes(o.cpu) ? o.cpu : "normal" };
     } catch (e) { /* 読めなければ既定 */ }
-    return { length: "south", rig: Rig.defaultConfig(), name: "", assist: true };
+    return { length: "south", rig: Rig.defaultConfig(), name: "", assist: true, cpu: "normal" };
   }
   function saveSettings() {
     try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* 保存できなくても続ける */ }
@@ -49,7 +49,8 @@
 
   // ---------- 牌操作の設定パネル ----------
   const SEAT_LABEL = ["あなた", "下家", "対面", "上家"];
-  const LUCK_LABEL = { "-1": "悪い", "0": "ふつう", "1": "少し良い", "2": "良い", "3": "とても良い" };
+  const LUCK_LABEL = { "-2": "悪い", "-1": "少し悪い", "0": "ふつう", "1": "少し良い", "2": "良い", "3": "とても良い" };
+  const SHANTEN_LABEL = { "0": "テンパイ", "1": "1シャンテン", "2": "2シャンテン", "3": "3シャンテン" };
   const THEME_LABEL = { none: "なし", tanyao: "タンヤオ", honitsu: "ホンイツ", chinitsu: "チンイツ", toitoi: "トイトイ", yakuhai: "役牌" };
   const SUIT_LABEL = { auto: "色おまかせ", m: "萬子", p: "筒子", s: "索子" };
   const FIELD_MAX = { hand: 13, draws: 18 };
@@ -58,10 +59,19 @@
     for (let n = 1; n <= 9; n++) { out.push(`${n}${s}`); if (n === 5) out.push(`5${s}r`); }
     return out;
   }).concat([MJ.HONORS.slice()]);
+  // 牌を選ぶ板の「まとめて入れる」ボタン（押すと、その仲間の牌を1枚ずつ、入るだけ入れる）
+  const BULK = [
+    ["萬子", [1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => n + "m")],
+    ["筒子", [1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => n + "p")],
+    ["索子", [1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => n + "s")],
+    ["字牌", MJ.HONORS.slice()],
+    ["19牌", ["1m", "9m", "1p", "9p", "1s", "9s"]],
+  ];
 
   /** root の中に設定パネルを作る。変えるたびに保存して onChange を呼ぶ。 */
   function mountRig(root, onChange) {
     let active = null; // 牌を足す先 {seat, field}
+    let rates = false; // 和了率の目安の小窓を開いているか
     // いま足せる牌か（足す先の枚数の上限と、全席を合わせた同じ牌の枚数）
     const addable = sp => !!active && settings.rig.seats[active.seat][active.field].length < FIELD_MAX[active.field] && Rig.canAdd(settings.rig, sp);
     function draw() {
@@ -74,13 +84,15 @@
             <span class="lab">${label}</span>
             <div class="chosen">${list.length ? list.map((sp, i) => specTile(sp, "", `data-i="${i}"`)).join("") : '<span class="none">指定なし</span>'}</div>
             ${list.length ? `<button type="button" class="clr" data-clear="${field}">消す</button>` : ""}
+            ${field === "hand" ? `<select data-k="shanten"><option value="">近さおまかせ</option>${Rig.SHANTENS.map(n =>
+              `<option value="${n}" ${c.shanten === n ? "selected" : ""}>${SHANTEN_LABEL[n]}</option>`).join("")}</select>` : ""}
           </div>`;
         };
         const needSuit = c.theme === "honitsu" || c.theme === "chinitsu";
         const who = s > 0 ? guestNameAt(s) : null; // 部屋にいる人の名前（その席に人がいるとき）
         return `<section class="rig-seat ${active && active.seat === s ? "active" : ""}" data-seat="${s}">
           <h3>${SEAT_LABEL[s]}${who ? `<span class="who">${esc(who)}</span>` : ""}</h3>
-          <div class="row"><span class="lab">運</span><div class="seg">${Rig.LUCKS.map(l =>
+          <div class="row"><span class="lab">運</span><div class="seg luck">${Rig.LUCKS.map(l =>
             `<button type="button" data-luck="${l}" class="${c.luck === l ? "on" : ""}">${LUCK_LABEL[l]}</button>`).join("")}</div></div>
           <div class="row"><span class="lab">役</span>
             <select data-k="theme">${Rig.THEMES.map(t => `<option value="${t}" ${c.theme === t ? "selected" : ""}>${THEME_LABEL[t]}</option>`).join("")}</select>
@@ -96,14 +108,32 @@
           <span class="ttl">牌操作</span>
           <label class="chk"><input type="checkbox" data-g="enabled" ${cfg.enabled ? "checked" : ""}>使う</label>
           <label class="chk"><input type="checkbox" data-g="showToAll" ${cfg.showToAll ? "checked" : ""}>ほかの参加者にも見せる</label>
+          <button type="button" class="pill rates-btn ${rates ? "on" : ""}" data-rates="toggle">和了率</button>
+          ${rates ? `<div class="rates">
+            <div class="rates-head"><span>運ごとの和了率</span><button type="button" class="clr" data-rates="close">閉じる</button></div>
+            <table>${Rig.LUCKS.map(l => `<tr><th>${LUCK_LABEL[l]}</th><td><i style="width:${Rig.LUCK_RATE[l] * 2}%"></i></td><td>${Rig.LUCK_RATE[l]}%</td></tr>`).join("")}</table>
+            <div class="rates-note">1局あたり・CPU が打った場合の目安</div>
+          </div>` : ""}
         </div>
         <div class="rig-seats">${cfg.seats.map(seatHtml).join("")}</div>
-        ${active ? `<div class="palette">${PALETTE.map(g => `<div class="grp">${g.map(sp => specTile(sp, addable(sp) ? "" : "used", `data-spec="${sp}"`)).join("")}</div>`).join("")}</div>` : ""}
+        ${active ? `<div class="palette">
+          <div class="bulk">${BULK.map((b, i) => `<button type="button" class="pill" data-bulk="${i}">${b[0]}</button>`).join("")}</div>
+          ${PALETTE.map(g => `<div class="grp">${g.map(sp => specTile(sp, addable(sp) ? "" : "used", `data-spec="${sp}"`)).join("")}</div>`).join("")}</div>` : ""}
       </div>`;
     }
     function changed() { saveSettings(); if (onChange) onChange(); draw(); }
     root.addEventListener("click", e => {
       const cfg = settings.rig;
+      const rt = e.target.closest("[data-rates]");
+      if (rt) { rates = rt.dataset.rates === "toggle" ? !rates : false; return draw(); }
+      const bulk = e.target.closest(".palette [data-bulk]");
+      if (bulk && active) {
+        // 仲間の牌を1枚ずつ、入るだけ入れる（枚数の上限・同じ牌4枚までを超える分は入れない）
+        let added = 0;
+        for (const sp of BULK[+bulk.dataset.bulk][1]) if (addable(sp)) { cfg.seats[active.seat][active.field].push(sp); added++; }
+        if (added) changed();
+        return;
+      }
       const pal = e.target.closest(".palette [data-spec]");
       if (pal && active) {
         if (addable(pal.dataset.spec)) { cfg.seats[active.seat][active.field].push(pal.dataset.spec); changed(); }
@@ -117,7 +147,7 @@
       const clr = e.target.closest("[data-clear]");
       if (clr) { c[clr.dataset.clear] = []; return changed(); }
       const rowEl = e.target.closest(".tiles-row");
-      if (!rowEl) return;
+      if (!rowEl || e.target.closest("select")) return; // 行の中の選択欄（配牌の近さ）は、牌を選ぶ板を開け閉めしない
       const field = rowEl.dataset.field;
       const chosen = e.target.closest(".chosen [data-i]");
       if (chosen) { c[field].splice(+chosen.dataset.i, 1); active = { seat: s, field }; return changed(); }
@@ -130,7 +160,8 @@
       const seatEl = el.closest(".rig-seat");
       if (!seatEl || !el.dataset.k) return;
       const c = cfg.seats[+seatEl.dataset.seat];
-      c[el.dataset.k] = el.type === "checkbox" ? el.checked : el.value;
+      if (el.dataset.k === "shanten") c.shanten = el.value === "" ? null : +el.value;
+      else c[el.dataset.k] = el.type === "checkbox" ? el.checked : el.value;
       changed();
     });
     draw();
@@ -303,7 +334,7 @@
           can ? (can.has(id) ? "can" : "dim") : "",
           selected === id ? "sel" : "",
           dora.includes(kindOf(id)) || isRed(id) ? "dora" : "",
-          d && d.keep ? "keep" : "", d && d.best ? "best" : "",
+          d && d.mark ? "keep" : "", d && d.best ? "best" : "",
           safe && safe.has(kindOf(id)) ? "safe" : "",
         ].join(" ");
       };
@@ -377,7 +408,7 @@
     const f = focusDiscard();
     if (f) {
       // 切る牌に触れている間: 切ったあとの待ち、または引けば進む牌
-      if (f.d.shanten > asst.shanten) h += `<span class="a-pill bad">${f.d.shanten}シャンテンに戻る</span>`;
+      if (f.d.shanten > asst.shanten) h += '<span class="a-pill bad">シャンテン戻し</span>';
       if (f.tenpai) return h + (f.tenpai.furiten ? '<span class="a-pill bad">フリテンになる</span>' : "") + waitsHtml(f.tenpai);
       const uke = f.d.uke.filter(u => u.left > 0);
       return h + `<span class="a-lab">進む牌</span>${uke.map(u => `<span class="a-uke">${kindTile(u.k)}<i>${u.left}</i></span>`).join("")}<span class="a-sum">${f.d.total}枚</span>`;
@@ -718,7 +749,7 @@
     const my = { gid: room ? room.gid : 0 };
     openGame(msg => table && table.submit(0, msg));
     table = new Table({
-      game, humans, timing: tableTiming(), onError: showError,
+      game, humans, cpu: settings.cpu, timing: tableTiming(), onError: showError,
       send(seat, p) {
         if (seat === 0) receive(clone(p));
         else if (room && room.seatId[seat]) room.net.send({ t: "state", gid: my.gid, p }, room.seatId[seat]);
@@ -938,6 +969,7 @@
     for (const el of document.querySelectorAll(".host-only")) el.classList.toggle("hidden", asGuest);
     $("#guestBox").classList.toggle("hidden", !asGuest);
     for (const b of document.querySelectorAll("#lengthSeg button")) b.classList.toggle("on", b.dataset.v === settings.length);
+    for (const b of document.querySelectorAll("#cpuSeg button")) b.classList.toggle("on", b.dataset.v === settings.cpu);
     const note = homeNote ? `<div class="room-note">${esc(homeNote)}</div>` : "";
     if (asGuest) {
       let h;
@@ -1015,6 +1047,12 @@
     const b = e.target.closest("button");
     if (!b) return;
     settings.length = b.dataset.v;
+    saveSettings(); drawHome();
+  });
+  $("#cpuSeg").addEventListener("click", e => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    settings.cpu = b.dataset.v;
     saveSettings(); drawHome();
   });
   $("#startBtn").addEventListener("click", () => { homeNote = ""; startGame(); });

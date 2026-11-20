@@ -6,7 +6,8 @@
  *   enabled: false なら全部ふつうの抽選。
  *   showToAll: 牌操作の内容をほかの参加者の画面にも出すか（画面側が使う。ここでは持つだけ）。
  *   seats[4]: 席ごと。
- *     luck   -1〜3（-1 悪い・0 ふつう・1 少し良い・2 良い・3 とても良い）。配牌の良さと、有効牌・和了牌を引く確率。
+ *     luck   -2〜3（-2 悪い・-1 少し悪い・0 ふつう・1 少し良い・2 良い・3 とても良い）。配牌の良さと、有効牌・和了牌を引く確率。
+ *     shanten 配牌のシャンテン数の指定（null おまかせ・0 テンパイ・1〜3）。指定すると、運による配牌の選び直しの代わりに、その近さの手を配る。
  *     theme  "none" | "tanyao"（2〜8だけ）| "honitsu"（1色＋字牌）| "chinitsu"（1色だけ）| "toitoi"（同じ牌が重なる）| "yakuhai"（役牌の対子から始まる）
  *     suit   "auto" | "m" | "p" | "s"（honitsu・chinitsu の色。auto は局ごとに抽選）
  *     guard  true なら、他家の当たり牌をツモらない（CPU がこの席からロンしない扱いは cpu.js 側）。
@@ -28,19 +29,29 @@
     return c;
   }
 
-  // 数値は Claude が置いた仮の目安（仕様書「牌操作」）。
-  const DEAL_TRIES = { "-1": 3, "0": 1, "1": 2, "2": 4, "3": 10 }; // 配牌を何回引いて、いちばん良い（-1 は悪い）ものを選ぶか
-  const DRAW_RATE = { "0": 0, "1": 0.1, "2": 0.22, "3": 0.4 }; // 聴牌前: 有効牌を引かせる確率
-  const WIN_RATE = { "0": 0, "1": 0.04, "2": 0.09, "3": 0.2 }; // 聴牌後: 和了牌を引かせる確率
+  // 運ごとの数値。LUCK_RATE（本人が決めた和了率の目安。仕様書「牌操作」）に合うように、tools/luck-rate.js で測って決めた。
+  //   tries: 配牌を何回引いて、いちばん良い（運が悪い側は、いちばん悪い）ものを選ぶか
+  //   draw : 聴牌前に有効牌を引かせる確率　　win: 聴牌後に和了牌を引かせる確率　　avoid: 有効牌・和了牌を避けさせる確率（運が悪い側）
+  const LUCK = {
+    "-2": { tries: 1, avoid: 0.44 },
+    "-1": { tries: 1, avoid: 0.18 },
+    "0": { tries: 1 },
+    "1": { tries: 1, draw: 0.05, win: 0.02 },
+    "2": { tries: 2, draw: 0.075, win: 0.035 },
+    "3": { tries: 2, draw: 0.17, win: 0.085 },
+  };
+  // 和了率の目安（%）。CPU（強さ ふつう）が打ったときの、その席の1局あたり。ほかの3席の運はふつう。画面の小窓に出す
+  const LUCK_RATE = { "-2": 12, "-1": 18, "0": 24, "1": 30, "2": 36, "3": 50 };
+  const FIT_TRIES = 12; // 配牌のシャンテン数の指定: 抜き出す候補を作り直して試す回数
   const TOITOI_RATE = 0.3; // 対々テーマで運がふつうのとき: 手にある牌をもう1枚引かせる確率
-  const BAD_RATE = 0.5; // luck -1: 有効牌を避けさせる確率
   const YAKUHAI_FEED_RATE = 0.25; // 役牌テーマ: 残りの役牌を他家に引かせる確率（切られてポンできるように）
 
-  const LUCKS = [-1, 0, 1, 2, 3];
+  const LUCKS = [-2, -1, 0, 1, 2, 3];
+  const SHANTENS = [0, 1, 2, 3]; // 配牌のシャンテン数として選べる値
   const THEMES = ["none", "tanyao", "honitsu", "chinitsu", "toitoi", "yakuhai"];
   const SUITS = ["auto", "m", "p", "s"];
 
-  function defaultSeat() { return { luck: 0, theme: "none", suit: "auto", guard: false, hand: [], draws: [] }; }
+  function defaultSeat() { return { luck: 0, theme: "none", suit: "auto", guard: false, shanten: null, hand: [], draws: [] }; }
   function defaultConfig() {
     return { enabled: true, showToAll: false, seats: [defaultSeat(), defaultSeat(), defaultSeat(), defaultSeat()] };
   }
@@ -60,6 +71,7 @@
       if (THEMES.includes(src.theme)) dst.theme = src.theme;
       if (SUITS.includes(src.suit)) dst.suit = src.suit;
       dst.guard = !!src.guard;
+      if (SHANTENS.includes(src.shanten)) dst.shanten = src.shanten;
       if (Array.isArray(src.hand)) dst.hand = src.hand.filter(validSpec).slice(0, 13);
       if (Array.isArray(src.draws)) dst.draws = src.draws.filter(validSpec).slice(0, 18);
     }
@@ -80,7 +92,7 @@
   }
   /** その席に何か操作が入っているか。 */
   function seatActive(cfg) {
-    return cfg.luck !== 0 || cfg.theme !== "none" || cfg.guard || cfg.hand.length > 0 || cfg.draws.length > 0;
+    return cfg.luck !== 0 || cfg.theme !== "none" || cfg.guard || cfg.shanten !== null || cfg.hand.length > 0 || cfg.draws.length > 0;
   }
 
   class Rig {
@@ -207,7 +219,8 @@
         const cfg = cfgs[s];
         const luck = on ? cfg.luck : 0;
         const allow = on ? this._allow(s) : null;
-        const tries = DEAL_TRIES[luck];
+        const fit = on && cfg.shanten !== null; // 近さの指定があるときは、選び直しをしない
+        const tries = fit ? 1 : LUCK[luck].tries;
         let best = null, bestScore = 0;
         for (let t = 0; t < tries; t++) {
           const sample = this._sample(pool, need, allow);
@@ -221,8 +234,55 @@
           if (luck < 0) score = -score;
           if (best === null || score < bestScore) { best = sample; bestScore = score; }
         }
+        if (fit) {
+          // 抜き出す候補を作り直しながら、指定の近さになるまで試す（届かなければ、いちばん近かった形）
+          let gap = 99;
+          for (let t = 0; t < FIT_TRIES && gap > 0; t++) {
+            const f = this._fitShanten(pool, r.hands[s], t === 0 ? best : this._sample(pool, need, allow), cfg.shanten, allow);
+            if (Math.abs(f.shanten - cfg.shanten) < gap) { gap = Math.abs(f.shanten - cfg.shanten); best = f.ids; }
+          }
+        }
         for (const id of best) r.hands[s].push(this._takeId(pool, id));
       }
+    }
+    /**
+     * 配牌のシャンテン数の指定: 抜き出す候補 sample の牌を1枚ずつ袋の牌と入れ替えて、fixed（指定の配牌など、もう手にある牌）と
+     * 合わせた手のシャンテン数を target に近づける（袋は変えない）。入れ替える先が無くなったら、そこまでの形で返す。
+     * 返すのは {ids: 抜き出す牌, shanten: fixed と合わせた手のシャンテン数}。
+     */
+    _fitShanten(pool, fixed, sample, target, allow) {
+      const out = sample.slice();
+      const c = countsOf(fixed.concat(out));
+      let s = MJ.shanten(c, 0);
+      for (let step = 0; step < 16 && s !== target; step++) {
+        const want = s > target ? s - 1 : s + 1;
+        const used = new Set(out), avail = new Map(); // 入れられる牌（種類ごとに1枚）
+        for (const t of this._free(pool)) {
+          const k = kindOf(t);
+          if (!used.has(t) && !avail.has(k) && (!allow || allow(k))) avail.set(k, t);
+        }
+        const moves = [], tried = new Set();
+        for (let i = 0; i < out.length; i++) {
+          const ko = kindOf(out[i]);
+          if (tried.has(ko)) continue;
+          tried.add(ko);
+          c[ko]--;
+          for (const [ki, id] of avail) {
+            if (ki === ko || c[ki] >= 4) continue;
+            c[ki]++;
+            if (MJ.shanten(c, 0) === want) moves.push([i, id]);
+            c[ki]--;
+          }
+          c[ko]++;
+        }
+        if (!moves.length) break;
+        const [i, id] = moves[this._rand(moves.length)];
+        c[kindOf(out[i])]--;
+        c[kindOf(id)]++;
+        out[i] = id;
+        s = want;
+      }
+      return { ids: out, shanten: s };
     }
     /** 袋から need 枚を抜き出す候補を作る（袋は変えない）。allow に合う牌で足りなければ、残りはほかの牌から。 */
     _sample(pool, need, allow) {
@@ -297,11 +357,11 @@
           eff.clear();
           for (let k = 0; k < 34; k++) if (c[k] === 1 || c[k] === 2) eff.add(k);
         }
+        const L = LUCK[cfg.luck];
         if (cfg.luck > 0) {
-          const rate = s0 === 0 ? WIN_RATE[cfg.luck] : DRAW_RATE[cfg.luck];
-          if (this.rng() < rate) narrow(t => eff.has(kindOf(t)));
+          if (this.rng() < (s0 === 0 ? L.win : L.draw)) narrow(t => eff.has(kindOf(t)));
         } else if (cfg.luck < 0) {
-          if (this.rng() < BAD_RATE) narrow(t => !eff.has(kindOf(t)));
+          if (this.rng() < L.avoid) narrow(t => !eff.has(kindOf(t)));
         } else if (this.rng() < TOITOI_RATE) narrow(t => eff.has(kindOf(t)));
       }
       return this._takeId(pool, cand[this._rand(cand.length)]);
@@ -313,6 +373,9 @@
   Rig.seatActive = seatActive;
   Rig.canAdd = canAdd;
   Rig.LUCKS = LUCKS;
+  Rig.LUCK = LUCK;
+  Rig.LUCK_RATE = LUCK_RATE;
+  Rig.SHANTENS = SHANTENS;
   Rig.THEMES = THEMES;
   Rig.SUITS = SUITS;
   return Rig;

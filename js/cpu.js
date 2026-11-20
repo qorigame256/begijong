@@ -1,7 +1,14 @@
 /*
  * cpu.js — CPU の打ち手。game.view(seat) で見える情報だけで決める（他家の手・山の中は見ない）。
  * ブラウザでは window.Cpu、node では require。
- *   Cpu.decide(view, options, extra) → game.act に渡す行動。extra.noRonFrom: この席たちからはロンしない（接待）。
+ *   Cpu.decide(view, options, extra) → game.act に渡す行動。
+ *     extra.noRonFrom: この席たちからはロンしない（接待）。
+ *     extra.level: 強さ "weak" | "normal" | "strong"（無ければ normal）。extra.rng: 弱い CPU が使う乱数（無ければ Math.random）。
+ *   強さの違い（仕様書 4.5章）:
+ *     weak   受け入れの枚数を見ずに切る。ときどき（TUNE.weakSlip）シャンテン数も見ずに、値打ちの低い牌から切る。立直にも降りない。
+ *     normal 受け入れの多い牌を切る。立直されて手が遠い（2シャンテン以上）ときだけ降りる。
+ *     strong normal に加えて、立直されたら1シャンテンでも、通りそうな牌で進められないときは降りる。立直されている間は、遠い手から鳴かない。
+ *            （3つ鳴いた相手も警戒する形は、測ると順位が良くならなかったので入れていない。2026-11-20）
  */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory(require("./calc.js"));
@@ -17,6 +24,14 @@
     return c;
   }
   const isTanyaoKind = k => k < 27 && k % 9 >= 1 && k % 9 <= 7;
+
+  const LEVELS = ["weak", "normal", "strong"];
+  // 数値は Claude が置いた仮の目安（tools/luck-rate.js の --cpu0 で測って決めた）
+  const TUNE = {
+    weakSlip: 0.3, // 弱い: シャンテン数を見ずに切る確率
+    pushUke: 8, // 強い: 警戒中の1シャンテンで押すのに要る受け入れの枚数
+    pushDanger: 4, // 強い: 警戒中の1シャンテンで切ってよい牌の危なさの上限（4 は筋・字牌・筋でない端の牌まで。筋でない 2〜8 は切らない）
+  };
 
   /** この席から見えている牌の枚数（自分の手・全員の副露・捨て牌・ドラ表示牌）。 */
   function visibleCounts(view, handIds) {
@@ -44,11 +59,14 @@
     if (isRed(id)) v += 3;
     return v;
   }
-  /** 立直している相手に対する牌 k の危なさ（0 が現物）。 */
-  function danger(view, k, vis) {
+  /** 警戒する相手の席（立直しているほかの人）。 */
+  function threatsOf(view) {
+    return [0, 1, 2, 3].filter(o => o !== view.seat && view.riichi[o]);
+  }
+  /** 警戒する相手（threats）に対する牌 k の危なさ（0 が全員の現物）。 */
+  function danger(view, k, vis, threats) {
     let total = 0;
-    for (let o = 0; o < 4; o++) {
-      if (o === view.seat || !view.riichi[o]) continue;
+    for (const o of threats) {
       const river = view.rivers[o].map(e => kindOf(e.id));
       if (river.includes(k)) continue;
       if (k >= 27) { total += vis[k] >= 3 ? 0.5 : vis[k] === 2 ? 1.5 : 3; continue; }
@@ -61,7 +79,7 @@
     return total;
   }
 
-  function decideTurn(view, o) {
+  function decideTurn(view, o, level, rng) {
     if (o.tsumo) return { type: "tsumo" };
     if (o.kyushu) return { type: "kyushu" };
     const hand = myHand(view), nm = view.melds[view.seat].length;
@@ -100,19 +118,33 @@
       c[k]++;
       cands.push({ id, k, s, uke, keep: keepValue(view, id, dora) });
     }
+    if (level === "weak") {
+      // 弱い: 受け入れを見ない。ときどきシャンテン数も見ない。降りない
+      if (rng() < TUNE.weakSlip) cands.sort((a, b) => a.keep - b.keep || a.s - b.s);
+      else cands.sort((a, b) => a.s - b.s || a.keep - b.keep);
+      const weak = cands[0];
+      if (weak.s === 0 && weak.uke > 0 && o.riichi.includes(weak.id)) return { type: "discard", id: weak.id, riichi: true };
+      return { type: "discard", id: weak.id };
+    }
     cands.sort((a, b) => a.s - b.s || b.uke - a.uke || a.keep - b.keep);
     let pick = cands[0];
-    const threatened = view.riichi.some((x, s) => x && s !== view.seat);
-    if (threatened && !view.riichi[view.seat] && pick.s >= 2) {
-      // 手が遠いときは降りる（いちばん安全な牌を切る）
-      const safe = cands.map(x => Object.assign({ d: danger(view, x.k, vis) }, x)).sort((a, b) => a.d - b.d || a.s - b.s || b.uke - a.uke);
-      pick = safe[0];
+    const threats = view.riichi[view.seat] ? [] : threatsOf(view);
+    if (threats.length && pick.s >= 1) {
+      const rated = cands.map(x => Object.assign({ d: danger(view, x.k, vis, threats) }, x));
+      // 強い: 1シャンテンなら、通りそうな牌を切って受け入れが残る形があれば、それで進める
+      const push = level === "strong" && pick.s === 1
+        ? rated.filter(x => x.s === 1 && x.d <= TUNE.pushDanger && x.uke >= TUNE.pushUke).sort((a, b) => b.uke - a.uke || a.d - b.d)[0] : null;
+      if (push) pick = push;
+      else if (pick.s >= 2 || level === "strong") {
+        // 降りる（いちばん安全な牌を切る）
+        pick = rated.sort((a, b) => a.d - b.d || a.s - b.s || b.uke - a.uke)[0];
+      }
     }
     if (pick.s === 0 && pick.uke > 0 && o.riichi.includes(pick.id)) return { type: "discard", id: pick.id, riichi: true };
     return { type: "discard", id: pick.id };
   }
 
-  function decideCall(view, o, extra) {
+  function decideCall(view, o, extra, level) {
     if (o.ron) {
       if (extra && extra.noRonFrom && extra.noRonFrom.includes(o.from)) return { type: "pass" };
       return { type: "ron" };
@@ -136,6 +168,7 @@
       return s < s0;
     };
     if (menzen && s0 <= 1 && !isYakuhai(view, k)) return { type: "pass" }; // 門前で近い手は立直を目指す
+    if (level === "strong" && s0 >= 2 && threatsOf(view).length) return { type: "pass" }; // 立直されている間は、遠い手から鳴かない
     for (const own of o.pon) {
       if (improves(own) && (isYakuhai(view, k) || hasYaku || tanyaoAfter(own))) return { type: "pon", tiles: own };
     }
@@ -146,8 +179,10 @@
   }
 
   function decide(view, options, extra) {
-    return options.kind === "turn" ? decideTurn(view, options) : decideCall(view, options, extra);
+    const level = extra && LEVELS.includes(extra.level) ? extra.level : "normal";
+    const rng = (extra && extra.rng) || Math.random;
+    return options.kind === "turn" ? decideTurn(view, options, level, rng) : decideCall(view, options, extra, level);
   }
 
-  return { decide, visibleCounts };
+  return { decide, visibleCounts, LEVELS, TUNE };
 });

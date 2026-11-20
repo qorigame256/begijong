@@ -5,8 +5,9 @@
  *   Assist.analyze(view) → {
  *     turn: 自分が切る番の形（手が 3n+2 枚）か,
  *     shanten: シャンテン数（切る番なら、切れる牌のうちいちばん良い切り方をしたあとの数。0 以下は聴牌）,
- *     discards: 切る番だけ。Map<牌の id, {k, shanten, uke: [{k, left}], total, keep, best, tenpai}>
- *               uke = 引けば進む牌と残り枚数、total = その合計、keep = シャンテン数が戻らない、best = keep の中で total が最多、
+ *     discards: 切る番だけ。Map<牌の id, {k, red, shanten, uke: [{k, left}], total, keep, mark, best, tenpai}>
+ *               uke = 引けば進む牌と残り枚数、total = その合計、keep = シャンテン数が戻らない、
+ *               mark = 印を付ける牌（keep の中で total の多い順に3種類まで）、best = mark の中で total が最多、
  *               tenpai = 切ると聴牌になるときの待ち（下の now と同じ形）,
  *     now: いまの13枚型の手（切る番ならツモ牌を除いた手）が聴牌のとき {waits: [{k, left, ron, tsumo}], furiten, noRon, noYaku}
  *          ron / tsumo = その牌で和了ったときの {yaku, han, fu, yakuman, points}。役が無ければ null。
@@ -30,6 +31,7 @@
   const kindOf = id => id >> 2;
   const isRed = id => id === 16 || id === 52 || id === 88;
   const INF = 99;
+  const MARK_MAX = 3; // 打牌の印（進む牌の印）を付ける牌の種類の上限（本人決定 2026-11-20。仕様書 6章①）
   function countsOf(ids) {
     const c = new Array(34).fill(0);
     for (const t of ids) c[t >> 2]++;
@@ -286,7 +288,7 @@
             tenpai = tenpaiInfo(c, melds, akaOf(ids, ms) - (isRed(id) ? 1 : 0), ctx, vis, rv);
           }
           c[k]++;
-          const info = { k, shanten: s, uke, total, keep: false, best: false, tenpai };
+          const info = { k, red: isRed(id), shanten: s, uke, total, keep: false, mark: false, best: false, tenpai };
           memo.set(key, info);
           list.push(info);
         }
@@ -296,7 +298,23 @@
         const min = Math.min(...list.map(x => x.shanten));
         const keep = list.filter(x => x.shanten === min);
         const top = Math.max(...keep.map(x => x.total));
-        for (const x of keep) { x.keep = true; x.best = x.total === top && top > 0; }
+        for (const x of keep) x.keep = true;
+        // 印を付けるのは MARK_MAX 種類まで: 進む牌の枚数が多い順。同じ枚数なら、手に残す値打ちの低い牌（字牌・端・ドラでない）を先に
+        const doraKinds = ctx.dora.map(MJ.doraOf);
+        const worth = x => {
+          let w = x.k >= 27 ? (x.k >= 31 || x.k === ctx.bakaze || x.k === ctx.jikaze ? 0.4 : 0) : [0.3, 0.6, 1, 1, 1, 1, 1, 0.6, 0.3][x.k % 9];
+          if (doraKinds.includes(x.k)) w += 3;
+          if (x.red) w += 3;
+          return w;
+        };
+        const ranked = keep.slice().sort((a, b) => b.total - a.total || worth(a) - worth(b) || a.k - b.k);
+        const marked = [], kinds = new Set();
+        for (const x of ranked) {
+          if (!kinds.has(x.k) && kinds.size >= MARK_MAX) continue;
+          kinds.add(x.k);
+          marked.push(x);
+        }
+        for (const x of marked) { x.mark = true; x.best = x.total === top && top > 0; }
         out.shanten = min;
       }
     }
