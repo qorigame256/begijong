@@ -23,6 +23,7 @@
         <button type="button" data-v="strong">強い</button>
       </div>
     </div>
+    <button type="button" id="statsBtn" class="pill hidden">戦績</button>
     <div id="roomBox" class="host-only"></div>
     <div id="homeRig" class="host-only"></div>
     <div class="home-btns host-only">
@@ -68,10 +69,21 @@
     <ul class="legend">
       <li><span class="lg keep"></span>切っても手が後戻りしない牌</li>
       <li><span class="lg best"></span>その中で、引けば進む牌がいちばん多い牌</li>
-      <li><span class="lg safe"></span>リーチした人に当たらない牌</li>
+      <li><span class="lg ev"></span>期待値がいちばん高い牌（自分だけがツモると見た目安。放銃は考えない）</li>
+      <li><span class="lg wide"><i class="def gen">現物</i></span>リーチした人の捨て牌にある牌（当たらない）</li>
+      <li><span class="lg wide"><i class="def suji">スジ</i></span>リーチした人の捨て牌から見たスジ（両面待ちには当たらない）</li>
+      <li><span class="lg wide"><i class="def kabe">壁</i></span>4枚見えている牌が壁になる牌（両面待ちには当たらない）</li>
       <li><span class="lg adv"></span>鳴くと手が進む（ポン・チーのボタン）</li>
     </ul>
     <div class="card-foot"><button type="button" id="assistClose" class="bigbtn small">閉じる</button></div>
+  </div>
+</div>
+
+<div id="statsModal" class="backdrop hidden">
+  <div class="card">
+    <div class="as-head"><span class="ttl">戦績</span></div>
+    <div id="statsTable"></div>
+    <div class="card-foot"><button type="button" id="statsClose" class="bigbtn small">閉じる</button></div>
   </div>
 </div>
 
@@ -83,6 +95,7 @@
 <script src="js/cpu.js"></script>
 <script src="js/assist.js"></script>
 <script src="js/table.js"></script>
+<script src="js/stats.js"></script>
 <script src="js/config.js"></script>
 <script src="js/net.js"></script>
 <script src="js/ui.js"></script>

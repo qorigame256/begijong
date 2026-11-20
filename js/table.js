@@ -4,6 +4,7 @@
  *
  * 使い方:
  *   t = new Table({ game: Game の opts, humans: [人が座る席], cpu: CPU の強さ（"weak" | "normal" | "strong"）, send(seat, packet), timing, onEnd, onError });
+ *     onEnd(summary) は終局したときに1回。summary は戦績の記録に使う {names, humans, length, final, tally: {rounds, wins[4], dealins[4]}}。
  *   t.start();
  *   t.submit(seat, { t: "act", ask, action })  人の行動（ask は packet.ask をそのまま返す。古い問いへの答えは捨てる）
  *   t.submit(seat, { t: "next" })              局の結果を見終えた
@@ -75,6 +76,8 @@
       this.ask = [0, 0, 0, 0];
       this.askObj = [null, null, null, null];
       this.round = 0;
+      this.tally = { rounds: 0, wins: [0, 0, 0, 0], dealins: [0, 0, 0, 0] }; // 戦績に使う局ごとの集計（打った局・和了・放銃）
+      this.tallied = 0; // 集計に入れた局（this.round の値）
       this.confirmed = new Set(); // 局の結果を見終えた席
       this.alive = false;
       this.token = 0;
@@ -180,6 +183,28 @@
     }
 
     // ---------- 進行 ----------
+    /** 終わった局を集計に入れる（1局に1回）。ダブロンの放銃は1回と数える。 */
+    _tally() {
+      if (this.tallied === this.round) return;
+      this.tallied = this.round;
+      const res = this.g.result, t = this.tally;
+      t.rounds++;
+      if (!res || res.type !== "win") return;
+      const from = new Set();
+      for (const w of res.wins) {
+        t.wins[w.seat]++;
+        if (!w.tsumo && w.from !== null) from.add(w.from);
+      }
+      for (const s of from) t.dealins[s]++;
+    }
+    /** 終局したときに onEnd へ渡す、戦績の記録に使う中身。 */
+    summary() {
+      const g = this.g;
+      return {
+        names: g.names.slice(), humans: [0, 1, 2, 3].filter(s => this.human[s]), length: g.length,
+        final: g.final ? JSON.parse(JSON.stringify(g.final)) : null, tally: JSON.parse(JSON.stringify(this.tally)),
+      };
+    }
     _startRound(first) {
       const g = this.g;
       if (first) g.startRound(); else g.nextRound();
@@ -197,10 +222,11 @@
         this._push();
         if (g.phase === "gameEnd") {
           this.alive = false;
-          if (this.onEnd) this.onEnd();
+          if (this.onEnd) this.onEnd(this.summary());
           return;
         }
         if (g.phase === "roundEnd") {
+          this._tally();
           if (![0, 1, 2, 3].every(s => !this._isHuman(s) || this.confirmed.has(s))) { await this._wait(); continue; }
           this._startRound(false);
           if (g.phase !== "gameEnd") { this._push(); await this._sleep(T.announce); }

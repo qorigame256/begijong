@@ -13,8 +13,9 @@
  *          ron / tsumo = その牌で和了ったときの {yaku, han, fu, yakuman, points}。役が無ければ null。
  *          裏ドラ・一発・海底などは入れない（確定している分だけ）。
  *     chances: 狙える役 [{yaku: calc.js の役名, label: 画面に出す名前, sure: もう確定しているか}],
- *     safe: 立直している他家全員の現物の種類（立直者がいなければ null）,
+ *     defense: 牌の種類ごとの守りの目安 [34]（3 現物・2 スジ・1 壁・0 なし。立直している他家がいなければ null）,
  *   }
+ *   Assist.evInput(view) → 期待値の計算（mj_engine.js の evaluateDiscards）に渡す {input, exclude}。切る番でなければ null。
  *   Assist.tenpaiAfter(view, id, riichi) → id を切ったあとの待ち（立直して切るときは riichi = true）。聴牌でなければ null。
  *   Assist.callInfo(view) → 鳴きの問い（view.options.kind === "call"）のとき
  *     {loseRiichi, pon: [{own, advances, noYaku, exact}], chi: [...], kan: {...} | null}
@@ -238,16 +239,85 @@
     return out;
   }
 
-  // ---------- 現物 ----------
-  /** 立直している他家（宣言牌を切った直後を含む）全員の捨て牌にある種類。立直者がいなければ null。 */
+  // ---------- 現物・スジ・壁（立直者に対する守りの目安。仕様書 6章⑨） ----------
+  const DEF = { genbutsu: 3, suji: 2, kabe: 1 }; // 強い順。立直者が2人以上なら、牌ごとにいちばん弱いものを出す
+  /** 立直している他家（宣言牌を切った直後を含む）の席。 */
+  const riichiSeats = view => [0, 1, 2, 3].filter(o => o !== view.seat && (view.riichi[o] || view.riichiPending === o));
+  /** 立直している他家全員の捨て牌にある種類。立直者がいなければ null。 */
   function safeKinds(view) {
-    const seats = [0, 1, 2, 3].filter(o => o !== view.seat && (view.riichi[o] || view.riichiPending === o));
+    const seats = riichiSeats(view);
     if (!seats.length) return null;
     const sets = seats.map(o => new Set(view.rivers[o].map(e => kindOf(e.id))));
     const out = [];
     for (let k = 0; k < 34; k++) if (sets.every(s => s.has(k))) out.push(k);
     return out;
   }
+  /** 捨て牌の種類 river から見て、牌 k が筋か。1・7 は 4、2・8 は 5、3・9 は 6。4・5・6 は両側がそろったときだけ。字牌は無い。 */
+  function isSuji(k, river) {
+    if (k >= 27) return false;
+    const r = k % 9, base = k - r;
+    if (r <= 2) return river.has(base + r + 3);
+    if (r >= 6) return river.has(base + r - 3);
+    return river.has(base + r - 3) && river.has(base + r + 3);
+  }
+  /** 牌 k で待つ両面の形（1 なら 23、4 なら 23 と 56）が、どれも自分から4枚とも見えている牌を使うか（ノーチャンス）。vis は見えている枚数。 */
+  function isKabe(k, vis) {
+    if (k >= 27) return false;
+    const r = k % 9, base = k - r;
+    const dead = x => vis[base + x] >= 4;
+    const shapes = [];
+    if (r <= 5) shapes.push([r + 1, r + 2]); // k と k+3 の両面
+    if (r >= 3) shapes.push([r - 2, r - 1]); // k−3 と k の両面
+    return shapes.every(([a, b]) => dead(a) || dead(b));
+  }
+  /** 牌の種類ごとの守りの目安（DEF の値。0 は印なし）。立直者がいなければ null。 */
+  function defense(view) {
+    const seats = riichiSeats(view);
+    if (!seats.length) return null;
+    const vis = visibleCounts(view);
+    const rivers = seats.map(o => new Set(view.rivers[o].map(e => kindOf(e.id))));
+    const out = new Array(34).fill(0);
+    for (let k = 0; k < 34; k++) {
+      const kabe = isKabe(k, vis) ? DEF.kabe : 0;
+      out[k] = Math.min(...rivers.map(rv => (rv.has(k) ? DEF.genbutsu : isSuji(k, rv) ? DEF.suji : kabe)));
+    }
+    return out;
+  }
+
+  // ---------- 期待値（仕様書 6章⑬）の計算に渡す入力 ----------
+  /**
+   * mj_engine.js の evaluateDiscards に渡す {input, exclude}。自分が切る番で、立直していない・和了形でないときだけ（ほかは null）。
+   * 見えている牌（vis）は、全員の副露・捨て牌（鳴かれた牌は副露の側で数える）・ドラ表示牌。自分の手牌は入れない（mj_engine.js の数え方）。
+   * exclude は喰い替えで切れない牌の種類（選択肢の discards に1枚も無い種類）。
+   */
+  function evInput(view) {
+    const o = view && view.options;
+    if (!o || o.kind !== "turn" || view.riichi[view.seat]) return null;
+    const seat = view.seat, ids = ownIds(view), ms = view.melds[seat];
+    if (ids.length % 3 !== 2 || MJ.shanten(countsOf(ids), ms.length) < 0) return null;
+    const spec = id => MJ.tileString(kindOf(id), isRed(id));
+    const vis = new Array(34).fill(0), visAka = [0, 0, 0];
+    const add = id => { vis[kindOf(id)]++; if (isRed(id)) visAka[(kindOf(id) / 9) | 0]++; };
+    for (const msx of view.melds) for (const m of msx) m.tiles.forEach(add);
+    for (const rv of view.rivers) for (const e of rv) if (!e.called) add(e.id);
+    view.doraInd.forEach(add);
+    const can = new Set(o.discards.map(kindOf));
+    return {
+      input: {
+        hand: ids.map(spec),
+        melds: ms.map(m => ({
+          type: m.type === "kakan" ? "minkan" : m.type, tile: Math.min(...m.tiles.map(kindOf)),
+          aka: m.tiles.filter(isRed).length, tiles: m.tiles.map(spec),
+        })),
+        vis, visAka, dora: view.doraInd.map(kindOf),
+        bakaze: 27 + view.bakaze, jikaze: 27 + (seat - view.oya + 4) % 4, oya: seat === view.oya,
+        draws: Math.floor(view.liveLeft / 4), haiteiLast: view.liveLeft > 0 && view.liveLeft % 4 === 0,
+      },
+      exclude: [...new Set(ids.map(kindOf))].filter(k => !can.has(k)),
+    };
+  }
+  /** 打牌の候補の鍵（種類と赤かどうか）。期待値の結果（index・red）と手牌の id を突き合わせるのに使う。 */
+  const evKey = (k, red) => k * 2 + (red ? 1 : 0);
 
   // ---------- まとめ ----------
   function analyze(view) {
@@ -257,7 +327,7 @@
     const c = countsOf(ids), vis = visibleCounts(view), river = riverSet(view);
     const ctx = ctxOf(view, myRiichi(view));
     const turn = ids.length % 3 === 2;
-    const out = { turn, shanten: MJ.shanten(c, nm), discards: null, now: null, chances: chances(c, melds, ctx, vis, false), safe: safeKinds(view) };
+    const out = { turn, shanten: MJ.shanten(c, nm), discards: null, now: null, chances: chances(c, melds, ctx, vis, false), defense: defense(view) };
 
     if (turn) {
       const allowed = view.options && view.options.kind === "turn" ? view.options.discards : ids;
@@ -398,5 +468,5 @@
     };
   }
 
-  return { analyze, tenpaiAfter, callInfo, chances, toitoiShanten, visibleCounts, safeKinds, yakuInfo, YAKU, CHANCE };
+  return { analyze, tenpaiAfter, callInfo, chances, toitoiShanten, visibleCounts, safeKinds, defense, isSuji, isKabe, DEF, evInput, evKey, yakuInfo, YAKU, CHANCE };
 });

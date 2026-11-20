@@ -23,10 +23,11 @@
     if (kind >= 27) return `tiles/${HONOR_FILES[kind - 27]}.svg`;
     return `tiles/${NUM_FILES[(kind / 9) | 0]}${kind % 9 + 1}${red ? "-Dora" : ""}.svg`;
   }
-  function tileBy(kind, red, cls, attr) {
-    return `<div class="tile ${cls || ""}" data-k="${kind}" ${attr || ""}><div class="face"><img src="${srcOf(kind, red)}" alt="" draggable="false"></div></div>`;
+  /** inner: 牌の面の外に重ねる印（手牌の下の「現物」の札など）。 */
+  function tileBy(kind, red, cls, attr, inner) {
+    return `<div class="tile ${cls || ""}" data-k="${kind}" ${attr || ""}><div class="face"><img src="${srcOf(kind, red)}" alt="" draggable="false"></div>${inner || ""}</div>`;
   }
-  const tile = (id, cls, attr) => tileBy(kindOf(id), isRed(id), cls, attr);
+  const tile = (id, cls, attr, inner) => tileBy(kindOf(id), isRed(id), cls, attr, inner);
   const specTile = (spec, cls, attr) => tileBy(MJ.tileIndex(spec), MJ.isRed(spec), cls, attr);
   const back = cls => `<div class="tile back ${cls || ""}"><div class="face"></div></div>`;
 
@@ -37,9 +38,9 @@
   const cleanName = (s, fallback) => (typeof s === "string" ? s.trim().slice(0, NAME_MAX) : "") || fallback;
 
   // アシストの入・切（仕様書 6章 A2）。部屋主（1人用は自分）が席ごとに4つのまとまりを入・切する。参加者は部屋主から届いた値を使い、自分では変えない。
-  //   cut 切る牌のヒント（進む牌の印・切る牌に触れたときの帯）　hand 手の状態（シャンテン数・待ち・役と点数・役なし・狙える役）
-  //   guard 守りと鳴き（現物の印・鳴く前の知らせ・鳴くと進む印）　aux 補助ボタン（自動和了・ツモ切り・鳴かない）
-  //   ここに無いもの（同じ牌を光らせる・結果の役の説明・フリテンの札・ドラの光・点差・立直後の自動ツモ切り）は、いつも全員に働く。
+  //   cut 切る牌のヒント（進む牌の印・切る牌に触れたときの帯・期待値）　hand 手の状態（シャンテン数・待ち・役と点数・役なし・狙える役）
+  //   guard 守りと鳴き（現物・スジ・壁の印・鳴く前の知らせ・鳴くと進む印）　aux 補助ボタン（自動和了・ツモ切り・鳴かない）
+  //   ここに無いもの（同じ牌を光らせる・結果の役の説明・フリテンの札・ドラの光・点差・立直後の自動ツモ切り・鳴く牌の強調）は、いつも全員に働く。
   const ASSIST_GROUPS = [["cut", "切る牌のヒント"], ["hand", "手の状態"], ["guard", "守りと鳴き"], ["aux", "補助ボタン"]];
   /** どんな入力でも {cut, hand, guard, aux} の形にそろえる（false と書いてあるものだけ切。ほかは入）。 */
   function cleanAssist(o) {
@@ -62,6 +63,17 @@
     try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* 保存できなくても続ける */ }
   }
   const settings = loadSettings();
+
+  // 戦績とレート（仕様書 6.6章）。部屋主のブラウザに全員分を名前で記録する（計算は stats.js）
+  const STATS_STORE = "settai-mahjong-stats" + AS;
+  function loadStats() {
+    try { return Stats.normalize(JSON.parse(localStorage.getItem(STATS_STORE))); } catch (e) { return Stats.normalize(null); }
+  }
+  function saveStats() {
+    try { localStorage.setItem(STATS_STORE, JSON.stringify(stats)); } catch (e) { /* 保存できなくても続ける */ }
+  }
+  let stats = loadStats();
+  let lastRated = null; // 部屋主: いちばん最後に数えた対局 {gid, rows: [{seat, name, before, after}]}
 
   // ---------- 牌操作の設定パネル ----------
   const SEAT_LABEL = ["あなた", "下家", "対面", "上家"];
@@ -206,6 +218,11 @@
   let focusWait = null; // 役と点数を出している待ち牌の種類
   const riichiMemo = new Map(); // 立直して切ったときの待ち（切る牌の id ごと。packet が変わったら捨てる）
   const auto = { win: false, tsumogiri: false, noCall: false }; // 補助ボタン。局が始まるたびに切へ戻す
+  const DEF_CLS = ["", "kabe", "suji", "gen"], DEF_LABEL = ["", "壁", "スジ", "現物"]; // 手牌の下の守りの印（Assist.DEF の値ごと）
+  // 期待値（仕様書 6章⑬）。自分が切る番ごとに、裏の Worker（ev-worker.js）で計算する
+  const EV_MAX_SHANTEN = 3; // これより遠い手は計算しない（計算が終わらないことが多い）
+  let ev = null; // いまの問いの期待値 {id, ask, session, done, map: Map<Assist.evKey, {ev, win, choice}> | null, top: Set<Assist.evKey> | null}
+  let evWorker = null, evBusy = false, evSeq = 0;
 
   const board = $("#board"), bubbles = $("#bubbles");
   const posOf = seat => (seat - ME + 4) % 4;
@@ -234,6 +251,7 @@
     finalShown = false;
     uiMode = "normal"; choices = []; selected = null; showDiff = false;
     asst = callAsst = null; hoverId = hoverKind = focusWait = null;
+    ev = null;
     auto.win = auto.tsumogiri = auto.noCall = false;
     drawAux();
     bubbles.innerHTML = "";
@@ -321,11 +339,15 @@
   function riverHtml(seat, dora) {
     const rv = v.rivers[seat], cells = [];
     let side = false;
+    // 鳴き（ポン・チー・カン・ロン）を聞かれている間、その捨て牌を強調する（仕様書 6章⑭。槍槓の牌は河に無い）
+    const o = canInput() && v.options.kind === "call" && !v.options.chankan && v.options.from === seat ? v.options : null;
     rv.forEach((e, i) => {
       if (e.riichi) side = true; // 宣言牌が鳴かれたら、次の牌を横にする
       if (e.called) return;
       const last = v.last && v.last.type === "discard" && v.last.seat === seat && i === rv.length - 1 && v.phase !== "roundEnd";
-      cells.push(tile(e.id, (side ? "side " : "") + (last ? "last " : "") + (e.tsumogiri ? "tg " : "") + (isDora(e.id, dora) ? "dora" : "")));
+      const ask = !!o && e.id === o.tile && i === rv.length - 1;
+      cells.push(tile(e.id, (side ? "side " : "") + (last ? "last " : "") + (ask ? "ask " : "") + (e.tsumogiri ? "tg " : "") + (isDora(e.id, dora) ? "dora" : ""),
+        "", ask ? '<i class="ask-mk"></i>' : ""));
       side = false;
     });
     const rows = [cells.slice(0, 6), cells.slice(6, 12), cells.slice(12)];
@@ -350,7 +372,9 @@
       const o = canInput() && v.options.kind === "turn" ? v.options : null;
       const can = o ? new Set(uiMode === "riichi" ? o.riichi : uiMode === "choose" ? [] : o.discards) : null;
       const a = myAssist();
-      const safe = a.guard && asst && asst.safe ? new Set(asst.safe) : null;
+      const def = a.guard && asst && asst.defense ? asst.defense : null; // 現物・スジ・壁（立直者がいるときだけ）
+      const top = a.cut && can && ev && ev.top ? ev.top : null; // 期待値がいちばん高い牌（同じ値は全部）
+      const isTop = id => !!top && can.has(id) && top.has(Assist.evKey(kindOf(id), isRed(id)));
       const cls = id => {
         const d = a.cut && can && can.has(id) && asst && asst.discards ? asst.discards.get(id) : null; // 切れる牌にだけ、進む印を付ける
         return [
@@ -358,11 +382,15 @@
           selected === id ? "sel" : "",
           isDora(id, dora) ? "dora" : "",
           d && d.mark ? "keep" : "", d && d.best ? "best" : "",
-          safe && safe.has(kindOf(id)) ? "safe" : "",
+          isTop(id) ? "evtop" : "",
         ].join(" ");
       };
-      hand = v.hand.map(id => tile(id, cls(id), `data-id="${id}"`)).join("");
-      if (v.drawn !== null) hand += tile(v.drawn, "drawn " + cls(v.drawn), `data-id="${v.drawn}"`);
+      const marks = id => {
+        const lv = def ? def[kindOf(id)] : 0;
+        return (lv ? `<i class="def ${DEF_CLS[lv]}">${DEF_LABEL[lv]}</i>` : "") + (isTop(id) ? '<i class="ev-mk"></i>' : "");
+      };
+      hand = v.hand.map(id => tile(id, cls(id), `data-id="${id}"`, marks(id))).join("");
+      if (v.drawn !== null) hand += tile(v.drawn, "drawn " + cls(v.drawn), `data-id="${v.drawn}"`, marks(v.drawn));
     } else {
       const n = v.handCounts[seat];
       const hasDraw = v.turn === seat && v.hasDrawn && n % 3 === 2;
@@ -393,6 +421,51 @@
     if (!v || !(a.cut || a.hand || a.guard)) return;
     // アシストの計算でつまずいても、対局は止めない（表示だけを出さない）
     try { asst = Assist.analyze(v); if (a.guard) callAsst = Assist.callInfo(v); } catch (e) { console.error(e); asst = callAsst = null; }
+    requestEv();
+  }
+
+  // ---------- 期待値（裏の Worker で計算する。仕様書 6章⑬） ----------
+  /** いまの問いの期待値を頼む（同じ問いで頼み済みなら何もしない）。切る牌のヒントが切・切る番でない・手が遠いときは出さない。 */
+  function requestEv() {
+    if (!(myAssist().cut && asst && asst.turn && canInput() && v.options.kind === "turn" && asst.shanten <= EV_MAX_SHANTEN)) { ev = null; return; }
+    if (ev && ev.ask === pkt.ask && ev.session === session) return;
+    ev = null;
+    let inp = null;
+    try { inp = Assist.evInput(v); } catch (e) { console.error(e); }
+    if (!inp || typeof Worker === "undefined") return;
+    // 前の計算が終わっていなければ止める（Worker は計算の途中で別の頼みを受けられないので、作り直す）
+    if (evWorker && evBusy) { evWorker.terminate(); evWorker = null; }
+    if (!evWorker) {
+      try { evWorker = new Worker("js/ev-worker.js"); } catch (e) { return; }
+      evWorker.onmessage = e => evDone(e.data);
+      evWorker.onerror = () => { evBusy = false; evWorker = null; evDone(null); };
+    }
+    ev = { id: ++evSeq, ask: pkt.ask, session, done: false, map: null, top: null };
+    evBusy = true;
+    evWorker.postMessage({ id: ev.id, input: inp.input, exclude: inp.exclude });
+  }
+  /** Worker から結果が届いた（d が null なら計算に失敗した）。 */
+  function evDone(d) {
+    if (d) evBusy = false;
+    if (!ev || ev.done || (d && d.id !== ev.id)) return;
+    ev.done = true;
+    if (d && d.ok && !d.tooMany) {
+      ev.map = new Map();
+      for (const c of d.candidates) if (c.ev !== null) ev.map.set(Assist.evKey(c.index, c.red), c);
+      const best = Math.max(0, ...[...ev.map.values()].map(c => c.ev));
+      if (best > 0) ev.top = new Set([...ev.map].filter(([, c]) => c.ev >= best - 1e-6).map(([k]) => k));
+    }
+    if (port && v && v.hand) render();
+  }
+  /** 帯に出す、触れている切る牌 d の期待値。 */
+  function evHtml(d) {
+    if (!ev || ev.ask !== pkt.ask) return "";
+    if (!ev.done) return '<span class="a-ev wait">期待値 計算中</span>';
+    const key = Assist.evKey(d.k, d.red), c = ev.map && ev.map.get(key);
+    if (!c) return "";
+    const top = ev.top && ev.top.has(key);
+    return `<span class="a-ev ${top ? "top" : ""}">${c.choice === "riichi" ? '<span class="a-rc">リーチ</span>' : ""}` +
+      `和了率 <b>${(c.win * 100).toFixed(1)}</b>%　期待値 <b>${Math.round(c.ev)}</b>点</span>`;
   }
   /** 自分の席の入・切が変わった（部屋主が切り替えた・参加者に届いた）。 */
   function assistChanged() {
@@ -446,6 +519,7 @@
     if (f) {
       // 切る牌に触れている間: 切ったあとの待ち、または引けば進む牌
       if (f.d.shanten > asst.shanten) h += '<span class="a-pill bad">シャンテン戻し</span>';
+      h += evHtml(f.d);
       if (f.tenpai) return h + (f.tenpai.furiten ? '<span class="a-pill bad">フリテンになる</span>' : "") + waitsHtml(f.tenpai);
       const uke = f.d.uke.filter(u => u.left > 0);
       return h + `<span class="a-lab">進む牌</span>${uke.map(u => `<span class="a-uke">${kindTile(u.k)}<i>${u.left}</i></span>`).join("")}<span class="a-sum">${f.d.total}枚</span>`;
@@ -765,8 +839,8 @@
   }
   function showFinal() {
     const f = v.final;
-    const lines = f.order.map((s, i) => `<div class="line ${i === 0 ? "first" : ""}">
-      <span class="no">${i + 1}位</span><span class="nm">${esc(v.names[s])}</span>
+    const lines = f.order.map((s, i) => `<div class="line ${i === 0 ? "first" : ""}" data-seat="${s}">
+      <span class="no">${i + 1}位</span><span class="nm">${esc(v.names[s])}<span class="rt"></span></span>
       <span class="sc">${f.scores[s]}</span><span class="pt">${f.points[i] > 0 ? "+" : ""}${f.points[i].toFixed(1)}</span></div>`).join("");
     const my = session;
     modal(`<div class="card"><div class="res-head">終局</div><div class="rank">${lines}</div>
@@ -777,7 +851,59 @@
       if (my !== session) return;
       if (val === "again") startGame(); else goHome();
     });
+    fillRates();
   }
+  /** 終局の板に、戦績に数えた対局ならレートと増減を入れる（部屋主は記録したあと、参加者は部屋主から届いたあと）。 */
+  function fillRates() {
+    const r = mode === "guest" ? guest && guest.lobby && guest.lobby.rated : lastRated;
+    const gid = mode === "guest" ? guest && guest.gid : room && room.gid;
+    if (!r || r.gid !== gid || !Array.isArray(r.rows)) return;
+    for (const row of r.rows) {
+      const el = overlay.querySelector(`.rank .line[data-seat="${Number(row.seat)}"] .rt`);
+      const a = Math.round(Number(row.after)), d = a - Math.round(Number(row.before));
+      if (!el || !isFinite(a) || !isFinite(d)) continue;
+      el.innerHTML = `R ${a}<i class="${d > 0 ? "plus" : d < 0 ? "minus" : ""}">${d > 0 ? "+" + d : d < 0 ? d : "±0"}</i>`;
+    }
+  }
+  /** 終局した（部屋主）。人が2人以上座っていた対局なら、戦績とレートに入れる。 */
+  function recordStats(sum, gid) {
+    const res = Stats.record(stats, sum);
+    if (!res.rows.length) return;
+    stats = res.store;
+    saveStats();
+    lastRated = { gid, rows: res.rows };
+    fillRates();
+  }
+
+  // ---------- 戦績の表 ----------
+  /** 表に出す行。部屋主は記録した全員、参加者は部屋主から届いた分（部屋にいる人と部屋主）。 */
+  function statsRows() {
+    if (mode === "guest" || JOIN_CODE) return guest && guest.lobby && guest.lobby.stats ? Stats.list(guest.lobby.stats) : [];
+    return Stats.list(stats);
+  }
+  function drawStats() {
+    const rows = statsRows(), canDelete = !JOIN_CODE;
+    const pct = x => (x === null ? "—" : (x * 100).toFixed(1) + "%");
+    const sign = x => (x > 0 ? "plus" : x < 0 ? "minus" : "");
+    $("#statsTable").innerHTML = !rows.length ? '<div class="st-none">まだ記録がありません</div>' : `<div class="st-wrap"><table class="st-table">
+      <tr><th>名前</th><th>レート</th><th>対局</th><th>平均順位</th><th>1位/2位/3位/4位</th><th>通算</th><th>和了率</th><th>放銃率</th>${canDelete ? "<th></th>" : ""}</tr>
+      ${rows.map(r => `<tr><th>${esc(r.name)}</th><td class="rate">${Math.round(r.rate)}</td><td>${r.games}</td>
+        <td>${r.avgRank === null ? "—" : r.avgRank.toFixed(2)}</td><td>${r.ranks.join(" / ")}</td>
+        <td class="${sign(r.points)}">${r.points > 0 ? "+" : ""}${r.points.toFixed(1)}</td><td>${pct(r.winRate)}</td><td>${pct(r.dealinRate)}</td>
+        ${canDelete ? `<td><button type="button" class="clr" data-st-del="${esc(r.name)}">消す</button></td>` : ""}</tr>`).join("")}
+    </table></div>`;
+  }
+  $("#statsTable").addEventListener("click", e => {
+    const b = e.target.closest("[data-st-del]");
+    if (!b || JOIN_CODE) return;
+    const name = b.dataset.stDel;
+    if (!confirm(`「${name}」の戦績を消しますか？（元に戻せません）`)) return;
+    stats = Stats.remove(stats, name);
+    saveStats();
+    drawStats();
+    drawHome();
+    if (room) sendLobby();
+  });
   function showError(err) {
     console.error(err);
     modal(`<div class="card"><div class="res-head">エラー</div><p>${esc(err && err.message)}</p>
@@ -802,6 +928,7 @@
     const game = { length: settings.length, rig: settings.rig };
     if (PARAMS.has("seed")) game.seed = +PARAMS.get("seed");
     const humans = [0];
+    lastRated = null; // 前の対局の増減を、この対局の終局の板に出さない
     if (room) {
       // 席1〜3: 部屋にいる人はその人、いない席は CPU
       let cpu = 0;
@@ -823,7 +950,7 @@
         if (seat === 0) receive(clone(p));
         else if (room && room.seatId[seat]) room.net.send({ t: "state", gid: my.gid, p }, room.seatId[seat]);
       },
-      onEnd() { if (room) { room.playing = false; dropOffline(); sendLobby(); } },
+      onEnd(sum) { if (room) { recordStats(sum, my.gid); room.playing = false; dropOffline(); sendLobby(); } }, // 1人用は戦績に数えない
     });
     table.start();
     if (room) sendLobby();
@@ -956,14 +1083,18 @@
   /**
    * 参加者ひとりずつに、部屋のいまの様子を送る:
    *   { t: "lobby", names: 席0〜3の名前（人がいない席は null）, you: 部屋の席（無ければ 0）, playing, inGame: いまの対局に席があるか,
-   *     assist: その人の席のアシストの入・切 {cut, hand, guard, aux} }
+   *     assist: その人の席のアシストの入・切 {cut, hand, guard, aux},
+   *     stats: 部屋主と部屋にいる人の戦績（stats.js の記録の形）, rated: いちばん最後に戦績に数えた対局 {gid, rows} | null }
    */
   function sendLobby() {
     if (!room) return;
     const names = [cleanName(settings.name, "部屋主")];
     for (let s = 1; s < 4; s++) names.push(guestNameAt(s));
+    const players = {};
+    for (const n of [names[0]].concat(room.members.map(m => m.name))) if (stats.players[n]) players[n] = stats.players[n];
+    const shared = { stats: { v: 1, players }, rated: lastRated && lastRated.gid === room.gid ? lastRated : null };
     for (const m of room.members) {
-      if (m.online) room.net.send({ t: "lobby", names, you: m.seat, playing: room.playing, inGame: gameSeatOf(m.id) > 0, assist: assistOf(m) }, m.id);
+      if (m.online) room.net.send(Object.assign({ t: "lobby", names, you: m.seat, playing: room.playing, inGame: gameSeatOf(m.id) > 0, assist: assistOf(m) }, shared), m.id);
     }
   }
 
@@ -1001,9 +1132,12 @@
       onData(d) {
         if (guest !== mine || !d || typeof d !== "object") return;
         if (d.t === "lobby") {
+          d.stats = Stats.normalize(d.stats); // 届いた戦績は決まった形にそろえてから使う
           guest.lobby = d;
           const a = cleanAssist(d.assist); // 部屋主が決めた、自分の席のアシストの入・切
           if (ASSIST_GROUPS.some(([k]) => a[k] !== guestAssist[k])) { guestAssist = a; assistChanged(); }
+          if (finalShown) fillRates();
+          if (!$("#statsModal").classList.contains("hidden")) drawStats();
           // 部屋主が対局を持っていない（読み込み直したなど）のに対局の画面にいたら、部屋へ戻る
           if (!d.inGame && port && !(v && v.phase === "gameEnd")) goHome();
           drawHome();
@@ -1050,6 +1184,7 @@
     $("#guestBox").classList.toggle("hidden", !asGuest);
     for (const b of document.querySelectorAll("#lengthSeg button")) b.classList.toggle("on", b.dataset.v === settings.length);
     for (const b of document.querySelectorAll("#cpuSeg button")) b.classList.toggle("on", b.dataset.v === settings.cpu);
+    $("#statsBtn").classList.toggle("hidden", !statsRows().length); // 記録が1人分以上あるとき
     const note = homeNote ? `<div class="room-note">${esc(homeNote)}</div>` : "";
     if (asGuest) {
       let h;
@@ -1144,6 +1279,8 @@
   $("#assistBtn").addEventListener("click", () => { drawAssistModal(); $("#assistModal").classList.remove("hidden"); });
   $("#assistClose").addEventListener("click", () => $("#assistModal").classList.add("hidden"));
   $("#quitBtn").addEventListener("click", () => quitGame());
+  $("#statsBtn").addEventListener("click", () => { drawStats(); $("#statsModal").classList.remove("hidden"); });
+  $("#statsClose").addEventListener("click", () => $("#statsModal").classList.add("hidden"));
 
   if (JOIN_CODE) {
     mode = "guest";
