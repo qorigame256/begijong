@@ -562,7 +562,7 @@
     if (k === null) return;
     for (const el of board.querySelectorAll(`.seat .tile[data-k="${k}"], .center .tile[data-k="${k}"]`)) el.classList.add("same");
   }
-  /** 鳴きの前の知らせ（立直できなくなる・役が無くなる）。 */
+  /** 鳴きの前の知らせ（立直できなくなる・役が無くなる・鳴いたあと狙える役）。 */
   function callNoteHtml() {
     if (!callAsst || !canInput() || v.options.kind !== "call") return "";
     const lines = [];
@@ -574,7 +574,15 @@
       const who = bad.length === types.length ? "鳴く" : bad.map(x => x[0] + "する").join("・");
       lines.push(["", `${who}と役がなくな${exact ? "ります" : "りそうです"}`]);
     }
-    return lines.length ? `<div class="call-note">${lines.map(l => `<span class="${l[0]}">${l[1]}</span>`).join("")}</div>` : "";
+    // 鳴いたあと狙える役（仕様書 6章⑮）: 鳴きの種類ごとに1行。札の見た目は帯の「狙える役」と同じ（実線＝どう和了っても付く）
+    const rows = types.map(([name, list]) => {
+      const ys = Assist.callYaku(list);
+      return ys.length ? `<div class="call-yaku"><span class="a-lab">${name}して狙える役</span>${ys.map(y => {
+        const info = Assist.yakuInfo(y.yaku);
+        return `<span class="a-yaku ${y.sure ? "sure" : ""}" title="${info ? esc(info[1]) : ""}">${esc(y.label)}</span>`;
+      }).join("")}</div>` : "";
+    }).join("");
+    return lines.length || rows ? `<div class="call-note">${lines.map(l => `<span class="${l[0]}">${l[1]}</span>`).join("")}${rows}</div>` : "";
   }
 
   function actionsHtml() {

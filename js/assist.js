@@ -18,9 +18,12 @@
  *   Assist.evInput(view) → 期待値の計算（mj_engine.js の evaluateDiscards）に渡す {input, exclude}。切る番でなければ null。
  *   Assist.tenpaiAfter(view, id, riichi) → id を切ったあとの待ち（立直して切るときは riichi = true）。聴牌でなければ null。
  *   Assist.callInfo(view) → 鳴きの問い（view.options.kind === "call"）のとき
- *     {loseRiichi, pon: [{own, advances, noYaku, exact}], chi: [...], kan: {...} | null}
+ *     {loseRiichi, pon: [{own, advances, noYaku, exact, yaku}], chi: [...], kan: {...} | null}
  *     advances = 鳴くとシャンテン数が進む、noYaku = 鳴くと役の付く和了り方が無い、
- *     exact = 鳴いたあと1シャンテン以内で、和了り方を全部たどって確かめた（false のときは CHANCE の目安で見た推定）。
+ *     exact = 鳴いたあと1シャンテン以内で、和了り方を全部たどって確かめた（false のときは CHANCE の目安で見た推定）、
+ *     yaku = 鳴いたあと狙える役 [{yaku, label, sure}]（chances と同じ形）。exact なら、たどった和了り方のどれかに付く役を全部
+ *            （sure = どう和了っても付く）。exact でなければ「狙える役」と同じ条件の役。noYaku なら空。
+ *   Assist.callYaku(pon や chi の配列) → その種類の鳴きで狙える役（鳴き方をまとめたもの）。
  *   Assist.yakuInfo(役名) → [読み, 一言の説明]。
  */
 (function (root, factory) {
@@ -405,6 +408,9 @@
    */
   function yakuAfter(c, melds, ctx, vis, type14) {
     const nm = melds.length;
+    // 和了り方 = 最後の聴牌の形 × 和了牌 × ロン・ツモ。ways はその数、seen は役ごとの「その役が付く和了り方」の数
+    const seen = new Map(), done = new Set();
+    let ways = 0, ok = false;
     const sc = (c13, k, tsumo) => {
       c13[k]++;
       const r = MJ.scoreHand({ c: c13, aka: 0, melds, win: k }, Object.assign({}, ctx, { tsumo }));
@@ -412,38 +418,67 @@
       return r;
     };
     const tenpai13 = c13 => {
+      const key = c13.join("");
+      if (done.has(key)) return; // 同じ聴牌の形は1回だけ数える（切る・引くの順が違っても同じ形に着く）
+      done.add(key);
       for (let k = 0; k < 34; k++) {
         if (c13[k] >= 4) continue;
         c13[k]++;
         const win = MJ.shanten(c13, nm) === -1;
         c13[k]--;
-        if (win && (sc(c13, k, false) || sc(c13, k, true))) return true;
+        if (!win) continue;
+        for (const tsumo of [false, true]) {
+          ways++;
+          const r = sc(c13, k, tsumo);
+          if (!r) continue;
+          ok = true;
+          for (const y of r.yaku) if (y[1] > 0 && !NOT_YAKU.has(y[0])) seen.set(y[0], (seen.get(y[0]) || 0) + 1);
+        }
       }
-      return false;
     };
     const from13 = c13 => { // 1シャンテンの13枚型
       for (let u = 0; u < 34; u++) {
         if (c13[u] >= 4 || vis[u] >= 4) continue;
         c13[u]++;
-        const ok = MJ.shanten(c13, nm) === 0 && from14(c13, 0);
+        if (MJ.shanten(c13, nm) === 0) from14(c13, 0);
         c13[u]--;
-        if (ok) return true;
       }
-      return false;
     };
     function from14(c14, s) { // 切ったあとのいちばん良いシャンテン数が s（0 か 1）の14枚型
       for (let d = 0; d < 34; d++) {
         if (!c14[d]) continue;
         c14[d]--;
-        const ok = MJ.shanten(c14, nm) === s && (s === 0 ? tenpai13(c14) : from13(c14));
+        if (MJ.shanten(c14, nm) === s) (s === 0 ? tenpai13 : from13)(c14);
         c14[d]++;
-        if (ok) return true;
       }
-      return false;
     }
     const s = Math.max(0, MJ.shanten(c, nm));
-    if (s <= 1) return { exact: true, ok: type14 ? from14(c, s) : s === 0 ? tenpai13(c) : from13(c) };
-    return { exact: false, ok: chances(c, melds, ctx, vis, true).length > 0 };
+    if (s <= 1) {
+      if (type14) from14(c, s); else if (s === 0) tenpai13(c); else from13(c);
+      const order = Object.keys(YAKU);
+      const yaku = [...seen].map(([name, n]) => ({ yaku: name, label: yakuLabel(name, ctx), sure: n === ways }))
+        .sort((a, b) => (b.sure ? 1 : 0) - (a.sure ? 1 : 0) || order.indexOf(a.yaku) - order.indexOf(b.yaku));
+      return { exact: true, ok, yaku: yaku.filter((y, i) => yaku.findIndex(z => z.label === y.label) === i) };
+    }
+    // 遠い手: 警告（役が残りそうか）は条件をゆるめた目安、出す役の名前は「狙える役」と同じ条件（ゆるめた目安の名前は外れやすいので出さない）
+    return { exact: false, ok: chances(c, melds, ctx, vis, true).length > 0, yaku: chances(c, melds, ctx, vis, false) };
+  }
+  const NOT_YAKU = new Set(["ドラ", "赤ドラ", "裏ドラ"]); // 飜は増えるが、役ではないもの
+  /** 役の名前（calc.js）→ 画面に出す名前。風の役牌は牌の名前で出す（「狙える役」の札と同じ）。 */
+  function yakuLabel(name, ctx) {
+    if (name === "役牌:場風牌") return "役牌 " + MJ.HONOR_NAMES[ctx.bakaze - 27];
+    if (name === "役牌:自風牌") return "役牌 " + MJ.HONOR_NAMES[ctx.jikaze - 27];
+    return YAKU[name] ? YAKU[name][0] : name;
+  }
+  /**
+   * 鳴き方の候補（callInfo の pon・chi の配列、kan は1つだけの配列）をまとめて、その種類の鳴きで狙える役にする。
+   * どれかの鳴き方で残る役を全部出し、sure は「どの鳴き方でも、どう和了っても付く」ときだけ。
+   */
+  function callYaku(list) {
+    const out = [];
+    for (const c of list) for (const y of c.yaku) if (!out.some(z => z.label === y.label)) out.push({ yaku: y.yaku, label: y.label, sure: false });
+    for (const y of out) y.sure = list.every(c => c.yaku.some(z => z.label === y.label && z.sure));
+    return out.sort((a, b) => (b.sure ? 1 : 0) - (a.sure ? 1 : 0));
   }
 
   function callInfo(view) {
@@ -458,7 +493,7 @@
       for (const t of own) c2[kindOf(t)]--;
       const m2 = melds.concat([{ type, tile: Math.min(k, ...own.map(kindOf)) }]);
       const y = yakuAfter(c2, m2, ctx, vis, type !== "minkan");
-      return { own, advances: MJ.shanten(c2, nm + 1) < s0, noYaku: !y.ok, exact: y.exact };
+      return { own, advances: MJ.shanten(c2, nm + 1) < s0, noYaku: !y.ok, exact: y.exact, yaku: y.yaku };
     };
     return {
       loseRiichi: ms.every(m => m.type === "ankan"),
@@ -468,5 +503,5 @@
     };
   }
 
-  return { analyze, tenpaiAfter, callInfo, chances, toitoiShanten, visibleCounts, safeKinds, defense, isSuji, isKabe, DEF, evInput, evKey, yakuInfo, YAKU, CHANCE };
+  return { analyze, tenpaiAfter, callInfo, callYaku, chances, toitoiShanten, visibleCounts, safeKinds, defense, isSuji, isKabe, DEF, evInput, evKey, yakuInfo, YAKU, CHANCE };
 });

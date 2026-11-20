@@ -256,11 +256,17 @@ button { font-family: inherit; color: inherit; }
 
 /* 鳴きの前の知らせ・鳴くと手が進む印 */
 .call-note { position: absolute; right: calc(var(--u) * 4); bottom: calc(var(--u) * 18.8); display: flex; flex-direction: column; align-items: flex-end; gap: calc(var(--u) * 0.5); z-index: 5; }
-.call-note span {
+.call-note > span {
   font-size: calc(var(--u) * 1.55); padding: calc(var(--u) * 0.35) calc(var(--u) * 1.2); border-radius: 99px;
   background: rgba(120, 20, 20, .88); border: 1px solid rgba(255, 150, 150, .6);
 }
-.call-note span.soft { background: rgba(8, 20, 18, .85); border-color: rgba(216, 181, 106, .55); }
+.call-note > span.soft { background: rgba(8, 20, 18, .85); border-color: rgba(216, 181, 106, .55); }
+/* 鳴いたあと狙える役（鳴きの種類ごとに1行。札は帯の「狙える役」と同じ .a-yaku） */
+.call-yaku {
+  display: flex; align-items: center; gap: calc(var(--u) * 0.6);
+  padding: calc(var(--u) * 0.35) calc(var(--u) * 0.6) calc(var(--u) * 0.35) calc(var(--u) * 1.2); border-radius: 99px;
+  background: rgba(8, 20, 18, .85); border: 1px solid rgba(216, 181, 106, .55);
+}
 .abtn.adv::after {
   content: ""; position: absolute; right: calc(var(--u) * 0.7); top: calc(var(--u) * 0.7); width: calc(var(--u) * 0.9); height: calc(var(--u) * 0.9);
   border-radius: 50%; background: #ffe9a8; box-shadow: 0 0 calc(var(--u) * 1) #ffd76a;
