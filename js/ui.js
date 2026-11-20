@@ -35,12 +35,28 @@
   const STORE = "settai-mahjong-v1" + AS;
   const NAME_MAX = 12;
   const cleanName = (s, fallback) => (typeof s === "string" ? s.trim().slice(0, NAME_MAX) : "") || fallback;
+
+  // アシストの入・切（仕様書 6章 A2）。部屋主（1人用は自分）が席ごとに4つのまとまりを入・切する。参加者は部屋主から届いた値を使い、自分では変えない。
+  //   cut 切る牌のヒント（進む牌の印・切る牌に触れたときの帯）　hand 手の状態（シャンテン数・待ち・役と点数・役なし・狙える役）
+  //   guard 守りと鳴き（現物の印・鳴く前の知らせ・鳴くと進む印）　aux 補助ボタン（自動和了・ツモ切り・鳴かない）
+  //   ここに無いもの（同じ牌を光らせる・結果の役の説明・フリテンの札・ドラの光・点差・立直後の自動ツモ切り）は、いつも全員に働く。
+  const ASSIST_GROUPS = [["cut", "切る牌のヒント"], ["hand", "手の状態"], ["guard", "守りと鳴き"], ["aux", "補助ボタン"]];
+  /** どんな入力でも {cut, hand, guard, aux} の形にそろえる（false と書いてあるものだけ切。ほかは入）。 */
+  function cleanAssist(o) {
+    const out = {};
+    for (const [k] of ASSIST_GROUPS) out[k] = !(o && typeof o === "object" && o[k] === false);
+    return out;
+  }
   function loadSettings() {
     try {
       const o = JSON.parse(localStorage.getItem(STORE));
-      if (o) return { length: o.length === "east" ? "east" : "south", rig: Rig.normalize(o.rig), name: cleanName(o.name, ""), assist: o.assist !== false, cpu: Cpu.LEVELS.includes(o.cpu) ? o.cpu : "normal" };
+      if (o) {
+        const seats = [0, 1, 2, 3].map(s => cleanAssist(Array.isArray(o.assistSeats) ? o.assistSeats[s] : null));
+        if (!Array.isArray(o.assistSeats) && o.assist === false) for (const [k] of ASSIST_GROUPS) seats[0][k] = false; // 前の版の「アシストを使う」が切
+        return { length: o.length === "east" ? "east" : "south", rig: Rig.normalize(o.rig), name: cleanName(o.name, ""), assistSeats: seats, cpu: Cpu.LEVELS.includes(o.cpu) ? o.cpu : "normal" };
+      }
     } catch (e) { /* 読めなければ既定 */ }
-    return { length: "south", rig: Rig.defaultConfig(), name: "", assist: true, cpu: "normal" };
+    return { length: "south", rig: Rig.defaultConfig(), name: "", assistSeats: [0, 1, 2, 3].map(() => cleanAssist(null)), cpu: "normal" };
   }
   function saveSettings() {
     try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* 保存できなくても続ける */ }
@@ -181,8 +197,11 @@
   let uiMode = "normal"; // normal | riichi（立直で切る牌を選ぶ）| choose（鳴き方・槓する牌を選ぶ）
   let choices = [];
   let selected = null; // タッチで1回目に選んだ牌
+  let showDiff = false; // 他家の点数の札に、自分との点差を出しているか（中央の四角を押すたびに切り替える）
   // アシスト（仕様書 6章）。計算は assist.js が、届いた view だけから行う
-  let asst = null, callAsst = null; // いまの packet の計算結果（手の分・鳴きの問いの分）。アシストが切のときは null
+  let guestAssist = cleanAssist(null); // 参加者: 部屋主から届いた自分の席の入・切
+  const myAssist = () => (mode === "guest" ? guestAssist : settings.assistSeats[0]); // 部屋主・1人用の自分は席0
+  let asst = null, callAsst = null; // いまの packet の計算結果（手の分・鳴きの問いの分）。使うまとまりが無いときは null（callAsst は guard が切でも null）
   let hoverId = null, hoverKind = null; // マウスが乗っている自分の手牌の id と、乗っている牌の種類（手牌以外も）
   let focusWait = null; // 役と点数を出している待ち牌の種類
   const riichiMemo = new Map(); // 立直して切ったときの待ち（切る牌の id ごと。packet が変わったら捨てる）
@@ -213,7 +232,7 @@
     lastAsk = sentAsk = -1;
     shownRound = confirmedRound = resultRound = -1;
     finalShown = false;
-    uiMode = "normal"; choices = []; selected = null;
+    uiMode = "normal"; choices = []; selected = null; showDiff = false;
     asst = callAsst = null; hoverId = hoverKind = focusWait = null;
     auto.win = auto.tsumogiri = auto.noCall = false;
     drawAux();
@@ -282,6 +301,8 @@
     let h = '<div class="felt"></div>' + centerHtml();
     for (let pos = 0; pos < 4; pos++) h += seatHtml((ME + pos) % 4, pos, dora);
     h += `<div class="assist">${assistInner()}</div>` + callNoteHtml() + actionsHtml();
+    // くり返す動き（ドラの光など）を、作り直しても続きから動かす（style.css の --sync）
+    board.style.setProperty("--sync", `${-Math.round(performance.now())}ms`);
     board.innerHTML = h;
     applySame();
     $("#rigBadge").classList.toggle("hidden", !pkt.rigShown);
@@ -296,14 +317,15 @@
       <div class="sub">残り ${v.liveLeft}</div>
     </div></div>`;
   }
-  function riverHtml(seat) {
+  const isDora = (id, dora) => dora.includes(kindOf(id)) || isRed(id);
+  function riverHtml(seat, dora) {
     const rv = v.rivers[seat], cells = [];
     let side = false;
     rv.forEach((e, i) => {
       if (e.riichi) side = true; // 宣言牌が鳴かれたら、次の牌を横にする
       if (e.called) return;
       const last = v.last && v.last.type === "discard" && v.last.seat === seat && i === rv.length - 1 && v.phase !== "roundEnd";
-      cells.push(tile(e.id, (side ? "side " : "") + (last ? "last " : "") + (e.tsumogiri ? "tg" : "")));
+      cells.push(tile(e.id, (side ? "side " : "") + (last ? "last " : "") + (e.tsumogiri ? "tg " : "") + (isDora(e.id, dora) ? "dora" : "")));
       side = false;
     });
     const rows = [cells.slice(0, 6), cells.slice(6, 12), cells.slice(12)];
@@ -327,13 +349,14 @@
     if (pos === 0) {
       const o = canInput() && v.options.kind === "turn" ? v.options : null;
       const can = o ? new Set(uiMode === "riichi" ? o.riichi : uiMode === "choose" ? [] : o.discards) : null;
-      const safe = asst && asst.safe ? new Set(asst.safe) : null;
+      const a = myAssist();
+      const safe = a.guard && asst && asst.safe ? new Set(asst.safe) : null;
       const cls = id => {
-        const d = can && can.has(id) && asst && asst.discards ? asst.discards.get(id) : null; // 切れる牌にだけ、進む印を付ける
+        const d = a.cut && can && can.has(id) && asst && asst.discards ? asst.discards.get(id) : null; // 切れる牌にだけ、進む印を付ける
         return [
           can ? (can.has(id) ? "can" : "dim") : "",
           selected === id ? "sel" : "",
-          dora.includes(kindOf(id)) || isRed(id) ? "dora" : "",
+          isDora(id, dora) ? "dora" : "",
           d && d.mark ? "keep" : "", d && d.best ? "best" : "",
           safe && safe.has(kindOf(id)) ? "safe" : "",
         ].join(" ");
@@ -347,9 +370,14 @@
     }
     const wind = WIND[(seat - v.oya + 4) % 4];
     const turn = v.phase === "turn" && v.turn === seat;
+    // 点差の表示中は、他家の札に「その人の点数 − 自分の点数」を出す
+    const d = v.scores[seat] - v.scores[ME];
+    const score = showDiff && pos !== 0
+      ? `<span class="score diff ${d > 0 ? "plus" : d < 0 ? "minus" : ""}">${d > 0 ? "+" + d : d < 0 ? d : "±0"}</span>`
+      : `<span class="score">${v.scores[seat]}</span>`;
     return `<div class="seat pos${pos}">
-      ${riverHtml(seat)}
-      <div class="plate ${seat === v.oya ? "oya" : ""} ${turn ? "turn" : ""}"><span class="wind">${wind}</span><span class="score">${v.scores[seat]}</span></div>
+      ${riverHtml(seat, dora)}
+      <div class="plate ${seat === v.oya ? "oya" : ""} ${turn ? "turn" : ""}"><span class="wind">${wind}</span>${score}</div>
       ${v.riichi[seat] ? '<div class="stick"></div>' : ""}
       <div class="hand">${hand}</div>
       <div class="melds">${v.melds[seat].map(m => meldHtml(m, seat)).join("")}</div>
@@ -361,13 +389,21 @@
   function refreshAssist() {
     asst = callAsst = null;
     riichiMemo.clear();
-    if (!settings.assist || !v) return;
+    const a = myAssist();
+    if (!v || !(a.cut || a.hand || a.guard)) return;
     // アシストの計算でつまずいても、対局は止めない（表示だけを出さない）
-    try { asst = Assist.analyze(v); callAsst = Assist.callInfo(v); } catch (e) { console.error(e); asst = callAsst = null; }
+    try { asst = Assist.analyze(v); if (a.guard) callAsst = Assist.callInfo(v); } catch (e) { console.error(e); asst = callAsst = null; }
   }
-  /** いま触れている「切る牌」の計算結果。触れていない・切れない牌なら null。 */
+  /** 自分の席の入・切が変わった（部屋主が切り替えた・参加者に届いた）。 */
+  function assistChanged() {
+    if (!myAssist().aux) auto.win = auto.tsumogiri = auto.noCall = false; // 見えないボタンで自動に答え続けない
+    refreshAssist();
+    drawAux();
+    if (port && v) render();
+  }
+  /** いま触れている「切る牌」の計算結果。触れていない・切れない牌、切る牌のヒントが切なら null。 */
   function focusDiscard() {
-    if (!asst || !asst.discards || !canInput()) return null;
+    if (!myAssist().cut || !asst || !asst.discards || !canInput()) return null;
     const o = v.options;
     if (o.kind !== "turn" || uiMode === "choose") return null;
     const id = hoverId !== null ? hoverId : selected;
@@ -401,11 +437,12 @@
   }
   function assistInner() {
     if (v.phase === "roundEnd" || v.phase === "gameEnd") return "";
+    const a = myAssist();
     let h = "";
-    if (asst) h += `<span class="a-badge ${asst.shanten <= 0 ? "tenpai" : ""}">${asst.shanten <= 0 ? "テンパイ" : asst.shanten + "シャンテン"}</span>`;
+    if (asst && a.hand) h += `<span class="a-badge ${asst.shanten <= 0 ? "tenpai" : ""}">${asst.shanten <= 0 ? "テンパイ" : asst.shanten + "シャンテン"}</span>`;
     if (v.furiten && v.waits.length) h += '<span class="a-pill bad">フリテン</span>';
     if (!asst) return h;
-    const f = focusDiscard();
+    const f = focusDiscard(); // 切る牌のヒントが切なら null
     if (f) {
       // 切る牌に触れている間: 切ったあとの待ち、または引けば進む牌
       if (f.d.shanten > asst.shanten) h += '<span class="a-pill bad">シャンテン戻し</span>';
@@ -413,6 +450,7 @@
       const uke = f.d.uke.filter(u => u.left > 0);
       return h + `<span class="a-lab">進む牌</span>${uke.map(u => `<span class="a-uke">${kindTile(u.k)}<i>${u.left}</i></span>`).join("")}<span class="a-sum">${f.d.total}枚</span>`;
     }
+    if (!a.hand) return h;
     if (asst.now) return h + waitsHtml(asst.now);
     if (asst.chances.length) {
       h += `<span class="a-lab">狙える役</span>` + asst.chances.map(c => {
@@ -477,21 +515,22 @@
 
   // ---------- 補助ボタン（自動和了・ツモ切り・鳴かない）と、立直後の自動ツモ切り ----------
   function drawAux() {
+    $("#aux").classList.toggle("hidden", !myAssist().aux);
     for (const b of document.querySelectorAll("#aux [data-auto]")) b.classList.toggle("on", auto[b.dataset.auto]);
   }
   /** いまの問いに補助ボタンの設定で自動で答えるなら {action, wait}。答えないなら null。 */
   function autoChoice() {
     if (!canInput()) return null;
-    const o = v.options;
+    const o = v.options, ax = myAssist().aux; // 補助ボタンが切の席は、立直後のツモ切りだけ
     let action = null, wait = 450;
     if (o.kind === "turn") {
       const plain = v.drawn !== null && !o.tsumo && !o.ankan.length && !o.kakan.length && !o.kyushu && o.discards.includes(v.drawn);
-      if (o.tsumo) { if (auto.win) action = { type: "tsumo" }; }
+      if (o.tsumo) { if (ax && auto.win) action = { type: "tsumo" }; }
       else if (plain && v.riichi[ME]) action = { type: "discard", id: v.drawn }; // 立直後は、選ぶことが無ければツモ切り
-      else if (plain && auto.tsumogiri && !o.riichi.length) action = { type: "discard", id: v.drawn };
+      else if (plain && ax && auto.tsumogiri && !o.riichi.length) action = { type: "discard", id: v.drawn };
     } else if (o.ron) {
-      if (auto.win) action = { type: "ron" };
-    } else if (auto.noCall) { action = { type: "pass" }; wait = 0; }
+      if (ax && auto.win) action = { type: "ron" };
+    } else if (ax && auto.noCall) { action = { type: "pass" }; wait = 0; }
     return action && { action, wait };
   }
   /** いまの問いに、補助ボタンの設定で自動で答えられるなら答える。 */
@@ -562,7 +601,9 @@
     const w = e.target.closest(".a-wait[data-wait]");
     if (w) return setFocusWait(+w.dataset.wait);
     const t = e.target.closest(".pos0 .hand .tile[data-id]");
-    if (t) onTile(+t.dataset.id, e.pointerType);
+    if (t) return onTile(+t.dataset.id, e.pointerType);
+    // 中央の四角（四隅の点数の札も中央の四角の中にある）: 点数 ⇔ 自分との点差
+    if (e.target.closest(".center, .plate")) { showDiff = !showDiff; render(); }
   });
   // マウスが乗っている牌: 自分の手牌なら帯に「切ったあと」を出し、どの牌でも同じ種類の牌を光らせる（タッチは1回目のタップで選んだ牌が同じ役目）
   function setHover(id, k) {
@@ -586,6 +627,38 @@
     auto[b.dataset.auto] = !auto[b.dataset.auto];
     drawAux();
     autoAct();
+  });
+
+  // ---------- アシストの入・切の表（部屋主・1人用。部屋の枠と、対局中の「アシスト」の板） ----------
+  /** cols: [{seat, lab, name}]。行＝4つのまとまり、列＝席。 */
+  function assistTableHtml(cols) {
+    const head = cols.map(c => `<th><span class="lab">${c.lab}</span>${c.name ? `<span class="nm">${esc(c.name)}</span>` : ""}</th>`).join("");
+    const rows = ASSIST_GROUPS.map(([k, label]) => `<tr><th>${label}</th>${cols.map(c => {
+      const on = settings.assistSeats[c.seat][k];
+      return `<td><button type="button" class="as-tg ${on ? "on" : ""}" data-as-seat="${c.seat}" data-as-key="${k}">${on ? "入" : "切"}</button></td>`;
+    }).join("")}</tr>`).join("");
+    return `<table class="as-table"><tr><th></th>${head}</tr>${rows}</table>`;
+  }
+  /** 対局中の板に出す列: 自分と、いまの対局で人が座っている席。 */
+  function gameAssistCols() {
+    const cols = [{ seat: 0, lab: SEAT_LABEL[0] }];
+    if (mode === "host" && table) for (let s = 1; s < 4; s++) if (table.human[s]) cols.push({ seat: s, lab: SEAT_LABEL[s], name: v ? v.names[s] : "" });
+    return cols;
+  }
+  function drawAssistModal() {
+    $("#assistTable").innerHTML = mode === "guest" ? "" : assistTableHtml(gameAssistCols()); // 参加者は印の意味の一覧だけ
+  }
+  document.addEventListener("click", e => {
+    const b = e.target.closest("[data-as-seat]");
+    if (!b || mode === "guest") return;
+    const s = +b.dataset.asSeat, k = b.dataset.asKey, flags = settings.assistSeats[s];
+    if (!flags || !(k in flags)) return;
+    flags[k] = !flags[k];
+    saveSettings();
+    if (s === 0) assistChanged();
+    if (room) sendLobby(); // 参加者の席の分は、部屋の様子と一緒に送る
+    drawAssistModal();
+    drawHome();
   });
 
   // ---------- 結果の表示 ----------
@@ -637,12 +710,8 @@
     if (w.base >= 2000) return "満貫";
     return "";
   }
-  function pointsText(w) {
-    const pay = MJ.payment(w.base, w.oya, w.tsumo);
-    if (!w.tsumo) return [String(pay.total), "点"];
-    if (w.oya) return [String(pay.each), "点オール"];
-    return [`${pay.ko}・${pay.oya}`, "点"];
-  }
+  /** 和了の点数（本場・供託を除く）。ツモも3人から受け取る合計を出す（誰がいくら払ったかは下の点数の表に出る）。 */
+  const pointsText = w => [String(MJ.payment(w.base, w.oya, w.tsumo).total), "点"];
   function scoresHtml(res, tags) {
     const cells = [0, 1, 2, 3].map(pos => {
       const s = (ME + pos) % 4, d = res.deltas[s];
@@ -879,13 +948,22 @@
   function dropOffline() {
     room.members = room.members.filter(m => m.online);
   }
-  /** 参加者ひとりずつに、部屋のいまの様子を送る。 */
+  /** その参加者の席のアシストの入・切（対局中はその対局の席、そうでなければ部屋の席。席が無ければ全部入）。 */
+  function assistOf(m) {
+    const s = gameSeatOf(m.id) > 0 ? gameSeatOf(m.id) : m.seat;
+    return s > 0 ? settings.assistSeats[s] : cleanAssist(null);
+  }
+  /**
+   * 参加者ひとりずつに、部屋のいまの様子を送る:
+   *   { t: "lobby", names: 席0〜3の名前（人がいない席は null）, you: 部屋の席（無ければ 0）, playing, inGame: いまの対局に席があるか,
+   *     assist: その人の席のアシストの入・切 {cut, hand, guard, aux} }
+   */
   function sendLobby() {
     if (!room) return;
     const names = [cleanName(settings.name, "部屋主")];
     for (let s = 1; s < 4; s++) names.push(guestNameAt(s));
     for (const m of room.members) {
-      if (m.online) room.net.send({ t: "lobby", names, you: m.seat, playing: room.playing, inGame: gameSeatOf(m.id) > 0 }, m.id);
+      if (m.online) room.net.send({ t: "lobby", names, you: m.seat, playing: room.playing, inGame: gameSeatOf(m.id) > 0, assist: assistOf(m) }, m.id);
     }
   }
 
@@ -924,6 +1002,8 @@
         if (guest !== mine || !d || typeof d !== "object") return;
         if (d.t === "lobby") {
           guest.lobby = d;
+          const a = cleanAssist(d.assist); // 部屋主が決めた、自分の席のアシストの入・切
+          if (ASSIST_GROUPS.some(([k]) => a[k] !== guestAssist[k])) { guestAssist = a; assistChanged(); }
           // 部屋主が対局を持っていない（読み込み直したなど）のに対局の画面にいたら、部屋へ戻る
           if (!d.inGame && port && !(v && v.phase === "gameEnd")) goHome();
           drawHome();
@@ -1003,6 +1083,8 @@
         </div>
         <div class="room-url">${esc(inviteUrl())}</div>
         <div class="room-seats"><div class="chip me"><span class="lab">${SEAT_LABEL[0]}</span>${nameInput("hostName")}</div>${seats}</div>
+        <div class="room-assist"><div class="sub-ttl">アシスト</div>${assistTableHtml([{ seat: 0, lab: SEAT_LABEL[0] }].concat(
+          [1, 2, 3].filter(s => guestNameAt(s) !== null).map(s => ({ seat: s, lab: SEAT_LABEL[s], name: guestNameAt(s) }))))}</div>
       </div>`;
     }
     setHtml($("#roomBox"), h);
@@ -1059,14 +1141,8 @@
   $("#roomBtn").addEventListener("click", () => { homeNote = ""; openRoom(null); });
   $("#rigBtn").addEventListener("click", () => { modalRig.draw(); $("#rigModal").classList.remove("hidden"); });
   $("#rigClose").addEventListener("click", () => $("#rigModal").classList.add("hidden"));
-  $("#assistBtn").addEventListener("click", () => { $("#assistOn").checked = settings.assist; $("#assistModal").classList.remove("hidden"); });
+  $("#assistBtn").addEventListener("click", () => { drawAssistModal(); $("#assistModal").classList.remove("hidden"); });
   $("#assistClose").addEventListener("click", () => $("#assistModal").classList.add("hidden"));
-  $("#assistOn").addEventListener("change", e => {
-    settings.assist = e.target.checked;
-    saveSettings();
-    refreshAssist();
-    if (port && v) render();
-  });
   $("#quitBtn").addEventListener("click", () => quitGame());
 
   if (JOIN_CODE) {
@@ -1083,5 +1159,5 @@
   drawHome();
 
   // 確かめ用（コンソールから対局の中を見る）
-  window.SettaiDebug = { get game() { return table && table.g; }, get table() { return table; }, get room() { return room; }, get guest() { return guest; }, settings };
+  window.SettaiDebug = { get game() { return table && table.g; }, get table() { return table; }, get room() { return room; }, get guest() { return guest; }, get assist() { return myAssist(); }, settings };
 })();

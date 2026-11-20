@@ -66,7 +66,11 @@ button { font-family: inherit; color: inherit; }
   background-size: 260% 100%;
   box-shadow: inset 0 0 calc(var(--u) * var(--w) * 0.16) rgba(255, 196, 60, .75); /* 光の帯が通っていない間も、ドラと分かる金色の縁 */
   animation: shine 2.2s linear infinite;
+  animation-delay: var(--sync, 0s);
 }
+/* --sync: ui.js が盤面を描き直すたびに #board へ入れる「ページを開いてからの時間」の負の値。
+   盤面は描き直すたびに牌を作り直すので、くり返す動きをこの値だけ先へ進めて始め、描き直しても動きが最初に戻らないようにする。
+   くり返す動きの animation-delay を外さない（外すと、他家が動くたびに光が最初からやり直しになる） */
 @keyframes shine { from { background-position: 130% 0; } to { background-position: -130% 0; } }
 
 /* ---------- 卓 ---------- */
@@ -105,7 +109,7 @@ button { font-family: inherit; color: inherit; }
 }
 .river .tile.side { align-self: center; } /* 立直の宣言牌は、列の下端でなく上下の中心に置く */
 .river .tile.tg .face { filter: brightness(.86); }
-.river .tile.last .face { outline: calc(var(--u) * 0.3) solid #ffd76a; outline-offset: calc(var(--u) * -0.05); animation: lastglow 1s ease-in-out infinite alternate; }
+.river .tile.last .face { outline: calc(var(--u) * 0.3) solid #ffd76a; outline-offset: calc(var(--u) * -0.05); animation: lastglow 1s ease-in-out infinite alternate; animation-delay: var(--sync, 0s); }
 @keyframes lastglow { from { outline-color: rgba(255, 215, 106, .55); } to { outline-color: rgba(255, 215, 106, 1); } }
 
 /* 手牌 */
@@ -138,10 +142,14 @@ button { font-family: inherit; color: inherit; }
 .plate .wind { font-family: var(--serif); font-weight: 700; font-size: calc(var(--u) * 2.9); color: #cfd8d3; }
 .plate.oya .wind { color: #ff9d73; }
 .plate .score { font-size: calc(var(--u) * 2.35); font-variant-numeric: tabular-nums; letter-spacing: .05em; color: #f4efe2; }
+/* 点差（中央の四角を押したとき。その人の点数 − 自分の点数） */
+.plate .score.diff.plus { color: #7fe0a8; } /* 色は結果の板の増減（.scores .delta）にそろえる */
+.plate .score.diff.minus { color: #ff8f8f; }
+.center, .plate { cursor: pointer; }
 .plate.turn::after {
   content: ""; position: absolute; left: 12%; right: 12%; bottom: calc(var(--u) * -0.1); height: calc(var(--u) * 0.45);
   border-radius: 99px; background: linear-gradient(90deg, transparent, #ffe08a, transparent);
-  box-shadow: 0 0 calc(var(--u) * 1.4) #ffd76a; animation: lastglow 1s ease-in-out infinite alternate;
+  box-shadow: 0 0 calc(var(--u) * 1.4) #ffd76a; animation: lastglow 1s ease-in-out infinite alternate; animation-delay: var(--sync, 0s);
 }
 .stick {
   position: absolute; left: calc(var(--u) * 42.5); width: calc(var(--u) * 15); top: calc(var(--u) * 62.4); height: calc(var(--u) * 1.15);
@@ -160,7 +168,7 @@ button { font-family: inherit; color: inherit; }
 .pos0 .hand .tile.best::after {
   top: calc(var(--u) * -1.45); width: calc(var(--u) * 1); height: calc(var(--u) * 1); margin-left: calc(var(--u) * -0.5);
   background: #ffe9a8; box-shadow: 0 0 calc(var(--u) * 1.1) #ffd76a, 0 0 calc(var(--u) * 0.3) #fff;
-  animation: markpulse 1.1s ease-in-out infinite alternate;
+  animation: markpulse 1.1s ease-in-out infinite alternate; animation-delay: var(--sync, 0s);
 }
 @keyframes markpulse { from { opacity: .7; } to { opacity: 1; } }
 .pos0 .hand .tile.safe::before {
@@ -235,6 +243,22 @@ button { font-family: inherit; color: inherit; }
 .as-head .ttl { font-family: var(--serif); font-weight: 700; font-size: 20px; letter-spacing: .2em; color: var(--gold2); }
 .as-head label.chk { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; cursor: pointer; }
 .as-head input[type="checkbox"] { width: 17px; height: 17px; accent-color: #d8b56a; }
+/* アシストの入・切の表（部屋主・1人用。行＝4つのまとまり、列＝席） */
+#assistTable:empty { display: none; }
+#assistTable { margin-bottom: 18px; }
+.as-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.as-table th, .as-table td { padding: 5px 4px; text-align: center; border-bottom: 1px solid rgba(255, 255, 255, .08); }
+.as-table tr:first-child th { vertical-align: bottom; }
+.as-table th:first-child { width: 7.5em; text-align: left; font-weight: 400; font-size: 14px; color: #cfd8d3; white-space: nowrap; }
+.as-table th .lab { display: block; font-size: 12px; font-weight: 400; color: #a9b8b2; }
+.as-table th .nm { display: block; font-family: var(--serif); font-size: 14px; font-weight: 400; color: #f2ead8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.as-tg {
+  min-width: 46px; padding: 4px 10px; border-radius: 99px; cursor: pointer; font-size: 13px;
+  background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .2); color: #8fa39b;
+}
+.as-tg.on { background: linear-gradient(#f3dc98, #c99c40); border-color: #fff0c0; color: #2a1a05; font-weight: 700; }
+.room-assist { margin-top: 14px; }
+.room-assist .sub-ttl { margin-bottom: 4px; font-family: var(--serif); font-size: 15px; letter-spacing: .15em; color: var(--gold2); }
 .legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 14px; color: #e9dfc4; }
 .legend li { display: flex; align-items: center; gap: 14px; }
 .legend .lg { flex: none; width: 26px; height: 14px; position: relative; }
