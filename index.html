@@ -97,6 +97,12 @@
 
 <div id="overlay" class="backdrop hidden"></div>
 
+<!-- スマホを縦に持っている間だけ出す（style.css の #rotate）。卓は隠すだけで、対局はそのまま進む -->
+<div id="rotate">
+  <svg viewBox="0 0 100 100" aria-hidden="true"><rect class="phone" x="32" y="14" width="36" height="72" rx="7"/><circle cx="50" cy="78" r="2.6"/></svg>
+  <p>スマホを横にしてください</p>
+</div>
+
 <script src="js/calc.js"></script>
 <script src="js/rig.js"></script>
 <script src="js/game.js"></script>

@@ -584,3 +584,17 @@ button { font-family: inherit; color: inherit; }
 .pname { position: absolute; left: calc(var(--u) * 3); width: calc(var(--u) * 25); bottom: calc(var(--u) * 2.6); height: calc(var(--u) * 3.6); display: flex; align-items: center; justify-content: flex-end; }
 .pname span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--serif); font-size: calc(var(--u) * 1.9); letter-spacing: .06em; color: #e9dfc4; text-shadow: 0 1px 3px rgba(0, 0, 0, .8); }
 .pos2 .pname span { transform: rotate(180deg); }
+
+/* スマホを縦に持っている間は「横にしてください」だけを出す（仕様書 6.8章）。
+   スマホ＝指で触る画面で、縦のときの幅が 600px 未満。タブレットと PC の縦長の窓には出さない */
+#rotate { display: none; }
+@media (orientation: portrait) and (pointer: coarse) and (max-width: 599px) {
+  #rotate {
+    position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+    background: radial-gradient(ellipse at 50% 40%, #1d332d 0%, #0b1513 60%, #040807 100%);
+  }
+  #rotate svg { width: 120px; height: 120px; fill: #d8b56a; animation: rotatephone 2.4s ease-in-out infinite; }
+  #rotate .phone { fill: none; stroke: #d8b56a; stroke-width: 4; }
+  #rotate p { margin: 0; font-family: var(--serif); font-size: 18px; letter-spacing: .12em; color: #e9dfc4; }
+}
+@keyframes rotatephone { 0%, 25% { transform: rotate(0deg); } 55%, 100% { transform: rotate(-90deg); } }
