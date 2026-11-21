@@ -54,10 +54,13 @@
       if (o) {
         const seats = [0, 1, 2, 3].map(s => cleanAssist(Array.isArray(o.assistSeats) ? o.assistSeats[s] : null));
         if (!Array.isArray(o.assistSeats) && o.assist === false) for (const [k] of ASSIST_GROUPS) seats[0][k] = false; // 前の版の「アシストを使う」が切
-        return { length: o.length === "east" ? "east" : "south", rig: Rig.normalize(o.rig), name: cleanName(o.name, ""), assistSeats: seats, cpu: Cpu.LEVELS.includes(o.cpu) ? o.cpu : "normal" };
+        return {
+          length: o.length === "east" ? "east" : "south", rig: Rig.normalize(o.rig), name: cleanName(o.name, ""), assistSeats: seats,
+          cpu: Cpu.LEVELS.includes(o.cpu) ? o.cpu : "normal", openHands: o.openHands === true,
+        };
       }
     } catch (e) { /* 読めなければ既定 */ }
-    return { length: "south", rig: Rig.defaultConfig(), name: "", assistSeats: [0, 1, 2, 3].map(() => cleanAssist(null)), cpu: "normal" };
+    return { length: "south", rig: Rig.defaultConfig(), name: "", assistSeats: [0, 1, 2, 3].map(() => cleanAssist(null)), cpu: "normal", openHands: false };
   }
   function saveSettings() {
     try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* 保存できなくても続ける */ }
@@ -263,6 +266,7 @@
     $("#rigModal").classList.add("hidden");
     $("#assistModal").classList.add("hidden");
     $("#rigBtn").classList.toggle("hidden", mode === "guest");
+    drawOpenBtn();
     $("#rigBadge").classList.add("hidden");
     $("#home").classList.add("hidden");
     $("#game").classList.remove("hidden");
@@ -395,6 +399,10 @@
       };
       hand = v.hand.map(id => tile(id, cls(id), `data-id="${id}"`, marks(id))).join("");
       if (v.drawn !== null) hand += tile(v.drawn, "drawn " + cls(v.drawn), `data-id="${v.drawn}"`, marks(v.drawn));
+    } else if (pkt.open && pkt.open[seat]) { // 手牌を開けている（仕様書 6.7章）
+      const o = pkt.open[seat];
+      const cls = id => (isDora(id, dora) ? "dora" : "");
+      hand = o.hand.map(id => tile(id, cls(id))).join("") + (o.drawn !== null ? tile(o.drawn, "drawn " + cls(o.drawn)) : "");
     } else {
       const n = v.handCounts[seat];
       const hasDraw = v.turn === seat && v.hasDrawn && n % 3 === 2;
@@ -986,7 +994,7 @@
     const my = { gid: room ? room.gid : 0 };
     openGame(msg => table && table.submit(0, msg));
     table = new Table({
-      game, humans, cpu: settings.cpu, timing: tableTiming(), onError: showError,
+      game, humans, cpu: settings.cpu, openHands: settings.openHands, timing: tableTiming(), onError: showError,
       send(seat, p) {
         if (seat === 0) receive(clone(p));
         else if (room && room.seatId[seat]) room.net.send({ t: "state", gid: my.gid, p }, room.seatId[seat]);
@@ -1258,6 +1266,7 @@
     $("#guestBox").classList.toggle("hidden", !asGuest);
     for (const b of document.querySelectorAll("#lengthSeg button")) b.classList.toggle("on", b.dataset.v === settings.length);
     for (const b of document.querySelectorAll("#cpuSeg button")) b.classList.toggle("on", b.dataset.v === settings.cpu);
+    for (const b of document.querySelectorAll("#openSeg button")) b.classList.toggle("on", (b.dataset.v === "open") === settings.openHands);
     $("#statsBtn").classList.toggle("hidden", !statsRows().length); // 記録が1人分以上あるとき
     const note = homeNote ? `<div class="room-note">${esc(homeNote)}</div>` : "";
     if (asGuest) {
@@ -1346,6 +1355,25 @@
     settings.cpu = b.dataset.v;
     saveSettings(); drawHome();
   });
+  // 手牌を開ける（仕様書 6.7章）。はじめの画面と、対局中の右上のボタン（部屋主・1人用だけ）。対局中に変えたらすぐ効く
+  function setOpenHands(on) {
+    settings.openHands = !!on;
+    saveSettings();
+    if (table) table.setOpenHands(settings.openHands);
+    drawOpenBtn();
+  }
+  function drawOpenBtn() {
+    const b = $("#openBtn");
+    b.classList.toggle("hidden", mode === "guest");
+    b.textContent = settings.openHands ? "手牌を隠す" : "手牌を開ける";
+  }
+  $("#openSeg").addEventListener("click", e => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    setOpenHands(b.dataset.v === "open");
+    drawHome();
+  });
+  $("#openBtn").addEventListener("click", () => setOpenHands(!settings.openHands));
   $("#startBtn").addEventListener("click", () => { homeNote = ""; startGame(); });
   $("#roomBtn").addEventListener("click", () => { homeNote = ""; openRoom(null); });
   $("#rigBtn").addEventListener("click", () => { modalRig.draw(); $("#rigModal").classList.remove("hidden"); });

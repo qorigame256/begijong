@@ -3,7 +3,7 @@
  * 画面も通信も持たない（1人用と部屋主のブラウザ、node のテストで動く）。ブラウザでは window.Table、node では require。
  *
  * 使い方:
- *   t = new Table({ game: Game の opts, humans: [人が座る席], cpu: CPU の強さ（"weak" | "normal" | "strong"）, send(seat, packet), timing, onEnd, onError });
+ *   t = new Table({ game: Game の opts, humans: [人が座る席], cpu: CPU の強さ（"weak" | "normal" | "strong"）, openHands: 全員の手牌を開けるか, send(seat, packet), timing, onEnd, onError });
  *     onEnd(summary) は終局したときに1回。summary は戦績の記録に使う {names, humans, length, final, tally: {rounds, wins[4], dealins[4]}}。
  *   t.start();
  *   t.submit(seat, { t: "act", ask, action })  人の行動（ask は packet.ask をそのまま返す。古い問いへの答えは捨てる）
@@ -11,9 +11,9 @@
  *   t.setConnected(seat, bool)                 切断中の人の席は CPU が代わりに打つ。戻ったらいまの状態を送り直す
  *   t.resync(seat)                             その席へいまの状態を送り直す
  *   t.endPackets()                             終局したとき切れていた人の席の、最後の packet {席: packet}（戻ってきたら送る）
- *   t.setRig(config) / t.stop()
+ *   t.setRig(config) / t.setOpenHands(bool) / t.stop()
  *
- * 人の席へ送る packet（JSON にできる値だけ。ほかの席の手・袋の中身は入れない）:
+ * 人の席へ送る packet（JSON にできる値だけ。袋の中身は入れない。ほかの席の手は open だけ）:
  *   view      game.view(seat)。その席が何もしなくても進むとき（立直後のツモ切り）は options を null にする
  *   events    前回この席へ送ったあとに起きたできごと（game.events。全員に見えるものだけ）
  *   ask       いまの問い（view.options）の番号
@@ -21,6 +21,8 @@
  *   needNext  局の結果を見終えた合図をまだ受け取っていない
  *   retry     入力をやり直させる（直前の行動を受け付けなかった・つなぎ直した）
  *   rigShown  「牌操作あり」の札を出すか
+ *   open      手牌を開けている間（仕様書 6.7章）だけ、席ごとの {hand: ツモった牌を除いた手（小さい順）, drawn: ツモった牌 | null}。受け取る席の分は null。
+ *             開けていないとき・局の前は null。view には入れない（CPU とアシストは view だけを見るので、開いた手を使わない）。
  */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory(require("./game.js"), require("./cpu.js"));
@@ -66,6 +68,7 @@
       this.g = new Game(opts.game);
       this.cpuLevel = Cpu.LEVELS.includes(opts.cpu) ? opts.cpu : "normal"; // CPU の強さ（全席まとめて）
       this.cpuRng = mulberry32((this.g.seed ^ 0x5bd1e995) >>> 0); // CPU が使う乱数（対局の乱数とは分ける。同じ seed なら同じ打ち方）
+      this.openHands = !!opts.openHands; // 全員の手牌を開けるか（仕様書 6.7章）
       this.send = opts.send;
       this.onEnd = opts.onEnd || null;
       this.onError = opts.onError || null;
@@ -132,7 +135,18 @@
         needNext: g.phase === "roundEnd" && !this.confirmed.has(seat),
         retry: !!retry,
         rigShown: !!(g.rig.config.showToAll && g.rig.active),
+        open: this._openHands(seat),
       };
+    }
+    /** packet の open（仕様書 6.7章）。 */
+    _openHands(seat) {
+      const r = this.g.r;
+      if (!this.openHands || !r) return null;
+      return [0, 1, 2, 3].map(s => {
+        if (s === seat) return null;
+        const drawn = r.turn === s && r.drawn !== null && r.hands[s].includes(r.drawn) ? r.drawn : null;
+        return { hand: r.hands[s].filter(t => t !== drawn).sort((a, b) => a - b), drawn };
+      });
     }
     _sendTo(seat, retry) {
       if (this._isHuman(seat)) this.send(seat, this._packet(seat, retry));
@@ -190,6 +204,13 @@
     }
     setRig(config) {
       this.g.rig.setConfig(config);
+      this.dirty = true;
+      if (this.alive) this._push();
+    }
+    /** 手牌を開ける・隠す（すぐ全員へ配り直す）。 */
+    setOpenHands(on) {
+      if (this.openHands === !!on) return;
+      this.openHands = !!on;
       this.dirty = true;
       if (this.alive) this._push();
     }
