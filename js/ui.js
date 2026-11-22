@@ -57,10 +57,11 @@
         return {
           length: o.length === "east" ? "east" : "south", rig: Rig.normalize(o.rig), name: cleanName(o.name, ""), assistSeats: seats,
           cpu: Cpu.LEVELS.includes(o.cpu) ? o.cpu : "normal", openHands: o.openHands === true,
+          sound: Sound.LEVELS.includes(o.sound) ? o.sound : "all",
         };
       }
     } catch (e) { /* 読めなければ既定 */ }
-    return { length: "south", rig: Rig.defaultConfig(), name: "", assistSeats: [0, 1, 2, 3].map(() => cleanAssist(null)), cpu: "normal", openHands: false };
+    return { length: "south", rig: Rig.defaultConfig(), name: "", assistSeats: [0, 1, 2, 3].map(() => cleanAssist(null)), cpu: "normal", openHands: false, sound: "all" };
   }
   function saveSettings() {
     try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* 保存できなくても続ける */ }
@@ -270,16 +271,19 @@
     $("#rigBadge").classList.add("hidden");
     $("#home").classList.add("hidden");
     $("#game").classList.remove("hidden");
+    document.body.classList.add("in-game"); // スマホを縦に持っている間は、対局の画面だけを回して描く（style.css の body.in-game）
   }
   function closeGame() {
     session++;
     port = null;
+    Sound.bgm(null);
     stopEv();
     hideOverlay();
     $("#rigModal").classList.add("hidden");
     $("#assistModal").classList.add("hidden");
     $("#game").classList.add("hidden");
     $("#home").classList.remove("hidden");
+    document.body.classList.remove("in-game");
   }
   /** packet が1つ届いた。 */
   function receive(p) {
@@ -295,14 +299,21 @@
         bubble(-1, roundName(e) + (e.honba ? ` ${e.honba}本場` : ""), "round");
         auto.win = auto.tsumogiri = auto.noCall = false;
         drawAux();
-      } else if (e.t === "call") bubble(e.seat, CALL[e.type]);
-      else if (e.t === "discard" && e.riichi) bubble(e.seat, "リーチ");
-      else if (e.t === "roundEnd" && v.result) {
+        Sound.se("start");
+      } else if (e.t === "call") { bubble(e.seat, CALL[e.type]); Sound.se("call"); }
+      else if (e.t === "discard") {
+        Sound.se("discard");
+        if (e.riichi) { bubble(e.seat, "リーチ"); Sound.se("riichi"); }
+      } else if (e.t === "roundEnd" && v.result) {
         ended = true;
         if (v.result.type === "win") for (const w of v.result.wins) bubble(w.seat, w.tsumo ? "ツモ" : "ロン", "win");
         else bubble(-1, ryukyokuName(v.result), "round");
+        Sound.se(v.result.type === "win" ? "win" : "ryukyoku");
       }
     }
+    // BGM: 誰かの立直が通っている間はリーチの BGM（Claude の判断 2026-11-22）。局の結果の間はそのまま、終局で止める
+    if (v.phase === "gameEnd") Sound.bgm(null);
+    else if (v.phase !== "roundEnd") Sound.bgm(v.riichi.some(x => x) ? "riichi" : "normal");
     render();
     const atEnd = v.phase === "roundEnd";
     if (resultRound !== -1 && !(atEnd && p.round === resultRound)) { resultRound = -1; hideOverlay(); }
@@ -314,7 +325,7 @@
         setTimeout(() => { if (my === session && pkt.round === round && v.phase === "roundEnd") showResult(round); }, ended ? speed(1100) : 0);
       }
     }
-    if (v.phase === "gameEnd" && !finalShown) { finalShown = true; showFinal(); }
+    if (v.phase === "gameEnd" && !finalShown) { finalShown = true; Sound.se("end"); showFinal(); }
     autoAct();
   }
 
@@ -344,6 +355,14 @@
     </div></div>`;
   }
   const isDora = (id, dora) => dora.includes(kindOf(id)) || isRed(id);
+  // 最後の捨て牌が落ちて着く動き（style.css の .drop）。新しい捨て牌を初めて描いた時刻を覚え、動いている間に描き直しても続きから動かす
+  let dropKey = "", dropAt = 0;
+  function dropOf(seat, len) {
+    const key = `${v.bakaze}:${v.kyoku}:${v.honba}:${seat}:${len}`, now = performance.now();
+    if (key !== dropKey) { dropKey = key; dropAt = now; }
+    const t = now - dropAt;
+    return t < 300 ? `style="--drop:${-Math.round(t)}ms"` : "";
+  }
   function riverHtml(seat, dora) {
     const rv = v.rivers[seat], cells = [];
     let side = false;
@@ -354,8 +373,9 @@
       if (e.called) return;
       const last = v.last && v.last.type === "discard" && v.last.seat === seat && i === rv.length - 1 && v.phase !== "roundEnd";
       const ask = !!o && e.id === o.tile && i === rv.length - 1;
-      cells.push(tile(e.id, (side ? "side " : "") + (last ? "last " : "") + (ask ? "ask " : "") + (e.tsumogiri ? "tg " : "") + (isDora(e.id, dora) ? "dora" : ""),
-        "", ask ? '<i class="ask-mk"></i>' : ""));
+      const drop = last ? dropOf(seat, rv.length) : "";
+      cells.push(tile(e.id, (side ? "side " : "") + (last ? "last " : "") + (drop ? "drop " : "") + (ask ? "ask " : "") + (e.tsumogiri ? "tg " : "") + (isDora(e.id, dora) ? "dora" : ""),
+        drop, ask ? '<i class="ask-mk"></i>' : ""));
       side = false;
     });
     const rows = [cells.slice(0, 6), cells.slice(6, 12), cells.slice(12)];
@@ -1365,7 +1385,8 @@
   function drawOpenBtn() {
     const b = $("#openBtn");
     b.classList.toggle("hidden", mode === "guest");
-    b.textContent = settings.openHands ? "手牌を隠す" : "手牌を開ける";
+    b.classList.toggle("on", settings.openHands);
+    b.querySelector("span").textContent = settings.openHands ? "手牌を隠す" : "手牌を開ける";
   }
   $("#openSeg").addEventListener("click", e => {
     const b = e.target.closest("button");
@@ -1373,7 +1394,32 @@
     setOpenHands(b.dataset.v === "open");
     drawHome();
   });
-  $("#openBtn").addEventListener("click", () => setOpenHands(!settings.openHands));
+  // 対局中に開けるときだけ、押す前に確かめる（本人決定 2026-11-22。隠すときは確かめない）
+  $("#openBtn").addEventListener("click", () => {
+    if (settings.openHands) setOpenHands(false);
+    else $("#openModal").classList.remove("hidden");
+  });
+  $("#openYes").addEventListener("click", () => { $("#openModal").classList.add("hidden"); setOpenHands(true); });
+  $("#openNo").addEventListener("click", () => $("#openModal").classList.add("hidden"));
+  // 音（sound.js）。ブラウザは人が押すまで音を出させないので、押すたびに起こす。雰囲気は SOUND_STYLE、鳴らす範囲は右上のボタンで端末ごとに選ぶ
+  const SOUND_STYLE = "chime";
+  const SOUND_TEXT = { all: "音 すべて", se: "音 効果音だけ", off: "音 なし" };
+  Sound.setStyle(SOUND_STYLE);
+  Sound.setLevel(settings.sound);
+  for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, () => Sound.unlock(), true);
+  function drawSoundBtn() {
+    const b = $("#soundBtn");
+    b.textContent = SOUND_TEXT[settings.sound];
+    b.classList.toggle("off", settings.sound === "off");
+  }
+  drawSoundBtn();
+  $("#soundBtn").addEventListener("click", () => {
+    const L = Sound.LEVELS;
+    settings.sound = L[(L.indexOf(settings.sound) + 1) % L.length];
+    saveSettings();
+    Sound.setLevel(settings.sound);
+    drawSoundBtn();
+  });
   $("#startBtn").addEventListener("click", () => { homeNote = ""; startGame(); });
   $("#roomBtn").addEventListener("click", () => { homeNote = ""; openRoom(null); });
   $("#rigBtn").addEventListener("click", () => { modalRig.draw(); $("#rigModal").classList.remove("hidden"); });

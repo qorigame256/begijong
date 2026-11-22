@@ -50,10 +50,11 @@
     <div id="netBadge" class="hidden">つなぎ直しています</div>
     <div id="rigBadge" class="hidden">牌操作あり</div>
     <button type="button" id="assistBtn">アシスト</button>
-    <button type="button" id="openBtn">手牌を開ける</button>
+    <button type="button" id="openBtn"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M1.5 12S5.5 4.5 12 4.5 22.5 12 22.5 12 18.5 19.5 12 19.5 1.5 12 1.5 12Z"/><circle cx="12" cy="12" r="3.6"/></svg><span>手牌を開ける</span></button>
     <button type="button" id="rigBtn">牌操作</button>
     <button type="button" id="quitBtn">やめる</button>
   </div>
+  <button type="button" id="soundBtn">音 すべて</button>
   <div id="aux">
     <button type="button" data-auto="win">自動和了</button>
     <button type="button" data-auto="tsumogiri">ツモ切り</button>
@@ -95,13 +96,18 @@
   </div>
 </div>
 
-<div id="overlay" class="backdrop hidden"></div>
-
-<!-- スマホを縦に持っている間だけ出す（style.css の #rotate）。卓は隠すだけで、対局はそのまま進む -->
-<div id="rotate">
-  <svg viewBox="0 0 100 100" aria-hidden="true"><rect class="phone" x="32" y="14" width="36" height="72" rx="7"/><circle cx="50" cy="78" r="2.6"/></svg>
-  <p>スマホを横にしてください</p>
+<div id="openModal" class="backdrop hidden">
+  <div class="card narrow open-ask">
+    <div class="as-head"><span class="ttl">手牌を開ける</span></div>
+    <p>全員の手牌を、全員の画面で表向きにします。<br>よろしいですか？</p>
+    <div class="card-foot">
+      <button type="button" id="openYes" class="bigbtn small">開ける</button>
+      <button type="button" id="openNo" class="bigbtn small ghost">やめる</button>
+    </div>
+  </div>
 </div>
+
+<div id="overlay" class="backdrop hidden"></div>
 
 <script src="js/calc.js"></script>
 <script src="js/rig.js"></script>
@@ -112,6 +118,7 @@
 <script src="js/stats.js"></script>
 <script src="js/config.js"></script>
 <script src="js/net.js"></script>
+<script src="js/sound.js"></script>
 <script src="js/ui.js"></script>
 </body>
 </html>

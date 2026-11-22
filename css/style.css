@@ -1,6 +1,5 @@
 /* 接待麻雀の見た目。卓は正方形で、長さの単位 --u は「画面の短い辺の 1/100」。牌の幅は --w（u の何倍か）で決める。 */
 :root {
-  --u: min(1vw, 1vh);
   --gold: #d8b56a;
   --gold2: #f6e3a8;
   --ink: #0b1513;
@@ -13,6 +12,9 @@ html, body {
   color: #f2ead8; font-family: var(--sans);
   background: radial-gradient(ellipse at 50% 30%, #1d332d 0%, #0b1513 55%, #040807 100%);
   user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+  /* 画面の幅・高さの 1/100。vw・vh を直に書かずにこれを使う（スマホを縦に持っている間の対局は body を回して描き、幅と高さを入れ替えるため。末尾の body.in-game） */
+  --vw: 1vw; --vh: 1vh;
+  --u: min(var(--vw), var(--vh));
 }
 button { font-family: inherit; color: inherit; }
 * { scrollbar-color: rgba(216, 181, 106, .5) transparent; scrollbar-width: thin; }
@@ -109,7 +111,24 @@ button { font-family: inherit; color: inherit; }
 }
 .river .tile.side { align-self: center; } /* 立直の宣言牌は、列の下端でなく上下の中心に置く */
 .river .tile.tg .face { filter: brightness(.86); }
-.river .tile.last .face { outline: calc(var(--u) * 0.3) solid #ffd76a; outline-offset: calc(var(--u) * -0.05); animation: lastglow 1s ease-in-out infinite alternate; animation-delay: var(--sync, 0s); }
+/* 最後の捨て牌（本人決定 2026-11-22。4案の比較画像から C）: 太い金の縁と光で少し浮かせ、捨てた人の側（牌の下＝手前）に金の三角。
+   捨てた瞬間だけ、少し上から落ちて着く（.drop。ui.js の riverHtml が付け、描き直しても続きから動くよう --drop を入れる） */
+.river .tile.last { z-index: 2; }
+.river .tile.last .face {
+  outline: calc(var(--u) * 0.5) solid #ffd76a; outline-offset: calc(var(--u) * 0.05);
+  translate: 0 calc(var(--u) * -0.7); /* transform でなく translate で浮かせる（立直の宣言牌は transform で横に回してあるため） */
+  box-shadow: 0 0 calc(var(--u) * 1.6) calc(var(--u) * 0.35) rgba(255, 215, 106, .9), 0 calc(var(--u) * 1) calc(var(--u) * 0.8) rgba(0, 0, 0, .5);
+}
+.river .tile.last:not(.ask)::after {
+  content: ""; position: absolute; left: 50%; top: calc(100% + var(--u) * 0.1); margin-left: calc(var(--u) * -1); pointer-events: none;
+  border-left: calc(var(--u) * 1) solid transparent; border-right: calc(var(--u) * 1) solid transparent; border-bottom: calc(var(--u) * 1.3) solid #ffd76a;
+  filter: drop-shadow(0 0 calc(var(--u) * 0.4) #ffb800);
+}
+.river .tile.last.drop .face { animation: lastdrop .25s ease-out both; animation-delay: var(--drop, 0s); }
+@keyframes lastdrop {
+  from { translate: 0 calc(var(--u) * -3); scale: 1.15; opacity: .3; }
+  to { translate: 0 calc(var(--u) * -0.7); scale: 1; opacity: 1; }
+}
 @keyframes lastglow { from { outline-color: rgba(255, 215, 106, .55); } to { outline-color: rgba(255, 215, 106, 1); } }
 /* 鳴きを聞かれている捨て牌（仕様書 6章⑭）: 橙の太い縁と、右から指す矢印（最後の捨て牌は列の右端なので、右はいつも空いている）。
    牌は大きくしない。縁は牌の大きさぴったり（外側の端が牌の端にそろう。本人決定 2026-11-20）。
@@ -273,7 +292,13 @@ button { font-family: inherit; color: inherit; }
 }
 
 /* 補助ボタン（左上）とアシストの板 */
-#aux { position: fixed; top: 10px; left: 10px; display: flex; flex-direction: column; gap: 8px; z-index: 10; } /* 横長の画面では卓の左の余白に縦に並べる */
+/* 横長の画面では、卓の左の外・自分の手牌の左わきに縦に並べ、下端を手牌の下端（卓の下から 2.2u）にそろえる（本人決定 2026-11-22。前は左上）。
+   卓は #game の真ん中にあるので、卓の左端は 50vw − 50u、下端は 50vh + 50u（vw・vh は --vw・--vh）。卓の左の余白が狭い画面（横÷縦が 1.3 未満）は左上のまま */
+#aux {
+  position: fixed; right: calc(var(--vw) * 50 + var(--u) * 50 + 10px); bottom: calc(var(--vh) * 50 - var(--u) * 50 + var(--u) * 2.2);
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px; z-index: 10;
+}
+@media (max-aspect-ratio: 13/10) { #aux { right: auto; bottom: auto; top: 54px; left: 10px; align-items: stretch; } } /* 左上の音のボタンの下 */
 #aux button {
   font-size: 13px; padding: 7px 14px; border-radius: 99px; cursor: pointer;
   background: rgba(8, 20, 18, .75); border: 1px solid rgba(216, 181, 106, .5); color: #e9dfc4;
@@ -281,7 +306,7 @@ button { font-family: inherit; color: inherit; }
 #aux button:hover { background: rgba(30, 60, 52, .9); }
 #aux button.on { background: linear-gradient(#f3dc98, #c99c40); border-color: #fff0c0; color: #2a1a05; font-weight: 700; }
 @media (max-aspect-ratio: 1/1) { #aux { top: auto; bottom: 10px; flex-direction: row; } }
-.card.narrow { width: min(94vw, 460px); }
+.card.narrow { width: min(calc(var(--vw) * 94), 460px); }
 .as-head { display: flex; align-items: center; gap: 22px; margin-bottom: 14px; }
 .as-head .ttl { font-family: var(--serif); font-weight: 700; font-size: 20px; letter-spacing: .2em; color: var(--gold2); }
 .as-head label.chk { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; cursor: pointer; }
@@ -387,6 +412,21 @@ button { font-family: inherit; color: inherit; }
   background: rgba(8, 20, 18, .75); border: 1px solid rgba(216, 181, 106, .5); color: #e9dfc4;
 }
 #hud button:hover { background: rgba(30, 60, 52, .9); }
+/* 音のボタン（左上。右上の列に足すと、対面の手牌・副露にかぶる幅が増えるため） */
+#soundBtn {
+  position: fixed; top: 10px; left: 10px; z-index: 10;
+  font-size: 13px; padding: 7px 14px; border-radius: 99px; cursor: pointer;
+  background: rgba(8, 20, 18, .75); border: 1px solid rgba(216, 181, 106, .5); color: #e9dfc4;
+}
+#soundBtn:hover { background: rgba(30, 60, 52, .9); }
+#soundBtn.off { color: #8fa39b; border-color: rgba(255, 255, 255, .2); }
+/* 手牌を開ける（本人の注文 2026-11-22「ほかのボタンと差別化」）: 朱色の縁と目の印。開けている間は朱で塗る。押す前に確かめる窓は #openModal */
+#hud #openBtn { display: inline-flex; align-items: center; gap: 5px; border-color: #e0674a; color: #ffc2b0; background: rgba(60, 14, 8, .8); }
+#hud #openBtn:hover { background: rgba(110, 30, 18, .9); }
+#hud #openBtn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; }
+#hud #openBtn.on { background: linear-gradient(#ef7a55, #b9381f); border-color: #ffc2b0; color: #fff4ee; font-weight: 700; }
+.open-ask p { margin: 0; font-size: 16px; line-height: 1.8; text-align: center; color: #f2ead8; }
+.open-ask .as-head { justify-content: center; }
 #rigBadge { font-size: 12px; padding: 5px 12px; border-radius: 99px; background: rgba(150, 60, 20, .85); border: 1px solid rgba(255, 190, 120, .6); }
 
 /* ---------- 重ねて出す板（結果・設定） ---------- */
@@ -398,13 +438,13 @@ button { font-family: inherit; color: inherit; }
 @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
 .card {
   --u: clamp(5.5px, 1.25vmin, 11px);
-  width: min(94vw, 720px); max-height: 94vh; overflow: auto;
+  width: min(calc(var(--vw) * 94), 720px); max-height: calc(var(--vh) * 94); overflow: auto;
   padding: 22px 26px; border-radius: 18px;
   background: linear-gradient(160deg, #173a32 0%, #0d221e 55%, #081513 100%);
   border: 1px solid rgba(216, 181, 106, .65);
   box-shadow: 0 20px 60px rgba(0, 0, 0, .7), inset 0 0 40px rgba(216, 181, 106, .08);
 }
-.card.wide { width: min(96vw, 980px); }
+.card.wide { width: min(calc(var(--vw) * 96), 980px); }
 .card-foot { display: flex; justify-content: center; gap: 14px; margin-top: 18px; }
 .bigbtn {
   font-family: var(--serif); font-weight: 700; font-size: 20px; letter-spacing: .2em; text-indent: .2em;
@@ -585,16 +625,20 @@ button { font-family: inherit; color: inherit; }
 .pname span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--serif); font-size: calc(var(--u) * 1.9); letter-spacing: .06em; color: #e9dfc4; text-shadow: 0 1px 3px rgba(0, 0, 0, .8); }
 .pos2 .pname span { transform: rotate(180deg); }
 
-/* スマホを縦に持っている間は「横にしてください」だけを出す（仕様書 6.8章）。
-   スマホ＝指で触る画面で、縦のときの幅が 600px 未満。タブレットと PC の縦長の窓には出さない */
-#rotate { display: none; }
+
+/* スマホを縦に持っている間の対局（仕様書 6.8章）: 画面の向きのロックを外さなくても横で遊べるよう、body ごと時計回りに 90 度回して横長に描く。
+   スマホの上端を左へ倒すと、ロックが入ったままでも卓が正しい向きに見える（ロックが無ければ画面が回り、ふつうの横の配置になる）。
+   はじめの画面と部屋は回さない（名前を打つキーボードが縦で出るため）。スマホ＝指で触る画面で、縦のときの幅が 600px 未満。
+   回している間は、幅と高さ（--vw・--vh）を入れ替える。body が回るので、中の position: fixed の部品も body に沿って並ぶ */
 @media (orientation: portrait) and (pointer: coarse) and (max-width: 599px) {
-  #rotate {
-    position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
-    background: radial-gradient(ellipse at 50% 40%, #1d332d 0%, #0b1513 60%, #040807 100%);
+  body.in-game {
+    --vw: 1vh; --vh: 1vw;
+    position: fixed; top: 0; left: 100vw; width: 100vh; height: 100vw;
+    transform-origin: 0 0; transform: rotate(90deg);
   }
-  #rotate svg { width: 120px; height: 120px; fill: #d8b56a; animation: rotatephone 2.4s ease-in-out infinite; }
-  #rotate .phone { fill: none; stroke: #d8b56a; stroke-width: 4; }
-  #rotate p { margin: 0; font-family: var(--serif); font-size: 18px; letter-spacing: .12em; color: #e9dfc4; }
+  @supports (height: 1dvh) { /* iPhone の Safari は 100vh が下のバーの裏まで含むので、見えている高さ（dvh）を使う */
+    body.in-game { --vw: 1dvh; width: 100dvh; }
+  }
+  /* 補助ボタン: 画面そのものは縦長なので、縦長・正方形に近い画面向けの指定（max-aspect-ratio）が効いてしまう。横長の置き方に戻す */
+  body.in-game #aux { top: auto; left: auto; right: calc(var(--vw) * 50 + var(--u) * 50 + 10px); bottom: calc(var(--vh) * 50 - var(--u) * 50 + var(--u) * 2.2); flex-direction: column; align-items: flex-end; }
 }
-@keyframes rotatephone { 0%, 25% { transform: rotate(0deg); } 55%, 100% { transform: rotate(-90deg); } }
