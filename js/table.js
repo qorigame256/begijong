@@ -3,7 +3,7 @@
  * 画面も通信も持たない（1人用と部屋主のブラウザ、node のテストで動く）。ブラウザでは window.Table、node では require。
  *
  * 使い方:
- *   t = new Table({ game: Game の opts, humans: [人が座る席], cpu: CPU の強さ（"weak" | "normal" | "strong"）, openHands: 全員の手牌を開けるか, send(seat, packet), timing, onEnd, onError });
+ *   t = new Table({ game: Game の opts, humans: [人が座る席], cpu: CPU の強さ（"weak" | "normal" | "strong" | "mortal"。mortal のときは mortal: Mortal.client と Mortal: mortal.js も渡す）, openHands: 全員の手牌を開けるか, send(seat, packet), timing, onEnd, onError });
  *     onEnd(summary) は終局したときに1回。summary は戦績の記録に使う {names, humans, length, final, tally: {rounds, wins[4], dealins[4]}}。
  *   t.start();
  *   t.submit(seat, { t: "act", ask, action })  人の行動（ask は packet.ask をそのまま返す。古い問いへの答えは捨てる）
@@ -29,7 +29,7 @@
   else root.Table = factory(root.Mahjong, root.Cpu);
 })(typeof self !== "undefined" ? self : this, function (Mahjong, Cpu) {
   "use strict";
-  const { Game, mulberry32 } = Mahjong;
+  const { Game, mulberry32, byTile } = Mahjong;
 
   // 待ち時間（ミリ秒）
   const TIMING = {
@@ -66,7 +66,10 @@
   class Table {
     constructor(opts) {
       this.g = new Game(opts.game);
-      this.cpuLevel = Cpu.LEVELS.includes(opts.cpu) ? opts.cpu : "normal"; // CPU の強さ（全席まとめて）
+      this.cpuLevel = Cpu.LEVELS.includes(opts.cpu) || opts.cpu === "mortal" ? opts.cpu : "normal"; // CPU の強さ（全席まとめて）
+      // "mortal": 部屋主の PC の Mortal（opts.mortal = Mortal.client。opts.Mortal = mortal.js の中身）に打たせる。聞けないときは "strong" で打つ
+      this.mortal = this.cpuLevel === "mortal" && opts.mortal && opts.Mortal ? { client: opts.mortal, M: opts.Mortal, logs: [0, 1, 2, 3].map(s => new opts.Mortal.Log(s)), fed: [0, 0, 0, 0] } : null;
+      this.mortalStats = { asked: 0, fallback: 0, errors: [], misses: [] }; // Mortal に聞いた回数・聞けずに今の CPU で打った回数（確かめ用）
       this.cpuRng = mulberry32((this.g.seed ^ 0x5bd1e995) >>> 0); // CPU が使う乱数（対局の乱数とは分ける。同じ seed なら同じ打ち方）
       this.openHands = !!opts.openHands; // 全員の手牌を開けるか（仕様書 6.7章）
       this.send = opts.send;
@@ -107,7 +110,26 @@
     _auto(seat, o) { return o.kind === "turn" && this.g.r.riichi[seat] > 0 && !o.tsumo && !o.ankan.length; }
     _cpuExtra() {
       const cfg = this.g.rig.config;
-      return { noRonFrom: cfg.enabled ? [0, 1, 2, 3].filter(s => cfg.seats[s].guard) : [], level: this.cpuLevel, rng: this.cpuRng };
+      return { noRonFrom: cfg.enabled ? [0, 1, 2, 3].filter(s => cfg.seats[s].guard) : [], level: this.cpuLevel === "mortal" ? "strong" : this.cpuLevel, rng: this.cpuRng };
+    }
+    /** CPU の席 s の行動。Mortal の席は Mortal に聞く（待つので、呼び手は待ったあとに状態を見直す）。 */
+    async _cpuDecide(s, o, extra) {
+      const g = this.g, mo = this.mortal;
+      if (mo) {
+        const view = g.view(s);
+        mo.logs[s].feed(g.events.slice(mo.fed[s]), view);
+        mo.fed[s] = g.events.length;
+        this.mortalStats.asked++;
+        try {
+          const a = await mo.M.decide(mo.client, mo.logs[s], view, o, extra);
+          if (a) return a;
+          if (this.mortalStats.misses.length < 20) this.mortalStats.misses.push(mo.M.lastMiss);
+        } catch (e) {
+          if (this.mortalStats.errors.length < 20) this.mortalStats.errors.push(String(e && e.message || e).slice(0, 300));
+        }
+        this.mortalStats.fallback++;
+      }
+      return Cpu.decide(g.view(s), o, extra);
     }
     _pendingSeats() {
       const g = this.g;
@@ -145,7 +167,7 @@
       return [0, 1, 2, 3].map(s => {
         if (s === seat) return null;
         const drawn = r.turn === s && r.drawn !== null && r.hands[s].includes(r.drawn) ? r.drawn : null;
-        return { hand: r.hands[s].filter(t => t !== drawn).sort((a, b) => a - b), drawn };
+        return { hand: r.hands[s].filter(t => t !== drawn).sort(byTile), drawn };
       });
     }
     _sendTo(seat, retry) {
@@ -273,6 +295,17 @@
         if (g.phase === "call") {
           const pend = g.pending, extra = this._cpuExtra();
           const cpus = seats.filter(s => !this._isHuman(s));
+          if (this.mortal && cpus.length) {
+            // Mortal に聞く間に、人の答え・切断・対局の止めで状態が変わることがある。待ったあと、問いが同じ席の分だけ答える
+            const acts = {};
+            for (const s of cpus) acts[s] = await this._cpuDecide(s, pend[s], extra);
+            if (my !== this.token) return;
+            for (const s of cpus) if (g.pending === pend && pend[s] && !(s in g.responses) && !this._isHuman(s)) g.act(s, acts[s]);
+            this.dirty = true;
+            if (g.pending === pend && this._pendingSeats().some(s => this._isHuman(s))) await this._wait();
+            else await this._sleep(T.afterCall);
+            continue;
+          }
           for (const s of cpus) g.act(s, Cpu.decide(g.view(s), pend[s], extra));
           if (cpus.length === seats.length) { this.dirty = true; await this._sleep(T.afterCall); }
           else await this._wait();
@@ -286,7 +319,12 @@
           await this._sleep(human ? T.autoDiscard : T.cpuThink);
           continue;
         }
-        const a = human ? { type: "discard", id: o.discards[0] } : Cpu.decide(g.view(s), o, this._cpuExtra());
+        let a;
+        if (!human && this.mortal) {
+          a = await this._cpuDecide(s, o, this._cpuExtra());
+          if (my !== this.token) return;
+          if (g.pending[s] !== o || s in g.responses || this._isHuman(s)) continue; // 待つ間に問いが変わった
+        } else a = human ? { type: "discard", id: o.discards[0] } : Cpu.decide(g.view(s), o, this._cpuExtra());
         g.act(s, a);
         this.dirty = true;
         if (a.type === "discard") this.pause = true;

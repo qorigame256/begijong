@@ -185,11 +185,46 @@
 
   /** 4面子1雀頭の形のシャンテン数。c は手の中（副露を除く）の枚数、melds は副露（暗槓を含む）の数。 */
   function regularShanten(c, melds) {
+    for (let i = 0; i < 34; i++) if (c[i] > 4) return slowRegularShanten(c, melds);
     const AB = combine(tableOf(0, suitCode(c, 0, 9)), tableOf(1, suitCode(c, 9, 9)), tmpAB);
     const CD = combine(tableOf(2, suitCode(c, 18, 9)), tableOf(3, suitCode(c, 27, 7)), tmpCD);
     return finalShanten(AB, CD, 4 - melds);
   }
 
+  /**
+   * 同じ牌が5枚以上ある手（接待麻雀の牌操作で作れる）の4面子1雀頭のシャンテン数。表を使う形（上）は1種類4枚までしか数えられないので、
+   * そのときだけ面子・雀頭・塔子の取り方を全部たどる（遅いが、そういう手はまれ）。c は変えずに返す。
+   */
+  function slowRegularShanten(c, melds) {
+    const need = 4 - melds;
+    let best = 8;
+    function dfs(i, m, t, p) {
+      while (i < 34 && c[i] === 0) i++;
+      if (i === 34) {
+        const s = 2 * (need - m) - Math.min(t, need - m) - p;
+        if (s < best) best = s;
+        return;
+      }
+      const num = i < 27, r = i % 9;
+      if (m < need) {
+        if (c[i] >= 3) { c[i] -= 3; dfs(i, m + 1, t, p); c[i] += 3; }
+        if (num && r <= 6 && c[i + 1] && c[i + 2]) { c[i]--; c[i + 1]--; c[i + 2]--; dfs(i, m + 1, t, p); c[i]++; c[i + 1]++; c[i + 2]++; }
+      }
+      if (c[i] >= 2) {
+        c[i] -= 2;
+        if (!p) dfs(i, m, t, 1);
+        if (m + t < need) dfs(i, m, t + 1, p);
+        c[i] += 2;
+      }
+      if (m + t < need && num) {
+        if (r <= 7 && c[i + 1]) { c[i]--; c[i + 1]--; dfs(i, m, t + 1, p); c[i]++; c[i + 1]++; }
+        if (r <= 6 && c[i + 2]) { c[i]--; c[i + 2]--; dfs(i, m, t + 1, p); c[i]++; c[i + 2]++; }
+      }
+      c[i]--; dfs(i, m, t, p); c[i]++; // この1枚は使わない
+    }
+    dfs(0, 0, 0, 0);
+    return best;
+  }
   function chiitoiShanten(c) {
     let pairs = 0, kinds = 0;
     for (let i = 0; i < 34; i++) { if (c[i] >= 1) kinds++; if (c[i] >= 2) pairs++; }
@@ -515,7 +550,7 @@
   return {
     HONORS, HONOR_NAMES, FIVES,
     tileIndex, isRed, redSuit, tileString, tileLabel, indexLabel, doraOf, isYaochu, counts34, akaCounts, parseHand,
-    shanten, regularShanten, chiitoiShanten, kokushiShanten,
+    shanten, regularShanten, chiitoiShanten, kokushiShanten, slowRegularShanten,
     decompositions, shapeReadings, scoreHand, basePoints, payment, pointsText,
   };
 });

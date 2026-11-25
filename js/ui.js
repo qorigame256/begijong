@@ -56,17 +56,39 @@
         if (!Array.isArray(o.assistSeats) && o.assist === false) for (const [k] of ASSIST_GROUPS) seats[0][k] = false; // 前の版の「アシストを使う」が切
         return {
           length: o.length === "east" ? "east" : "south", rig: Rig.normalize(o.rig), name: cleanName(o.name, ""), assistSeats: seats,
-          cpu: Cpu.LEVELS.includes(o.cpu) ? o.cpu : "normal", openHands: o.openHands === true,
-          sound: Sound.LEVELS.includes(o.sound) ? o.sound : "all",
+          cpu: Cpu.LEVELS.includes(o.cpu) || o.cpu === "mortal" ? o.cpu : "normal", openHands: o.openHands === true,
+          sound: Sound.LEVELS.includes(o.sound) ? o.sound : "all", mortal: o.mortal === true,
         };
       }
     } catch (e) { /* 読めなければ既定 */ }
-    return { length: "south", rig: Rig.defaultConfig(), name: "", assistSeats: [0, 1, 2, 3].map(() => cleanAssist(null)), cpu: "normal", openHands: false, sound: "all" };
+    return { length: "south", rig: Rig.defaultConfig(), name: "", assistSeats: [0, 1, 2, 3].map(() => cleanAssist(null)), cpu: "normal", openHands: false, sound: "all", mortal: false };
   }
   function saveSettings() {
     try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* 保存できなくても続ける */ }
   }
   const settings = loadSettings();
+
+  // ---------- Mortal（部屋主の PC の中で動く麻雀 AI。mortal.js・tools/mortal/bridge.py） ----------
+  // CPU の強さ「Mortal」と、打牌のヒント（切る牌のヒントのまとまり）に使う。箱につながるときだけボタンと印を出す
+  if (PARAMS.has("mortal")) { settings.mortal = PARAMS.get("mortal") !== "0"; saveSettings(); }
+  const mortalCl = Mortal.client(window.SETTAI_CONFIG && window.SETTAI_CONFIG.mortal);
+  let mortalOk = false; // 箱につながる
+  let mlog = null; // 自分の席の mjai の記録（届いた packet から作る）
+  let mh = null; // いまの問いのヒント {ask, session, done, data}
+  const mortalWanted = () => ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname) || settings.mortal;
+  /** 箱につながるかを確かめ直す（はじめの画面を出すたび。対局中は確かめない）。 */
+  let mortalProbedAt = -1e9;
+  function probeMortal() {
+    if (!mortalWanted() || performance.now() - mortalProbedAt < 3000) return;
+    mortalProbedAt = performance.now();
+    mortalCl.health().then(ok => {
+      if (ok === mortalOk) return;
+      mortalOk = ok;
+      if (!$("#home").classList.contains("hidden")) drawHome();
+    });
+  }
+  /** いま使う CPU の強さ（Mortal を選んでいても、箱につながらなければ「強い」）。 */
+  const cpuLevel = () => (settings.cpu === "mortal" && !mortalOk ? "strong" : settings.cpu);
 
   // 戦績とレート（仕様書 6.6章）。部屋主のブラウザに全員分を名前で記録する（計算は stats.js）
   const STATS_STORE = "settai-mahjong-stats" + AS;
@@ -79,13 +101,26 @@
   let stats = loadStats();
   let lastRated = null; // 部屋主: いちばん最後に数えた対局 {gid, rows: [{seat, name, before, after}]}
 
+  // 振り返り（仕様書 6.11章）。「迷った」の印を付けた場面を、各自の端末に残す（記録の形は review.js）
+  const REVIEW_STORE = "settai-mahjong-review" + AS;
+  function loadReviews() {
+    try { return Review.normalize(JSON.parse(localStorage.getItem(REVIEW_STORE))); } catch (e) { return Review.normalize(null); }
+  }
+  function saveReviews() {
+    try { localStorage.setItem(REVIEW_STORE, JSON.stringify(reviews)); } catch (e) { /* 保存できなくても続ける */ }
+  }
+  let reviews = loadReviews();
+  // いまの対局の印。game: 記録中の対局（初めて印を付けたときに作る）、pending: 自分が切る番に押した（切ったら印を付ける）、
+  // last: 直前に切った場面 {scene, marked}（次に自分が切る番が来るか、次の局が始まるまで印を付け外しできる）、n: 打牌の通し番号
+  const mark = { game: null, pending: false, last: null, n: 0 };
+
   // ---------- 牌操作の設定パネル ----------
   const SEAT_LABEL = ["あなた", "下家", "対面", "上家"];
   const LUCK_LABEL = { "-2": "悪い", "-1": "少し悪い", "0": "ふつう", "1": "少し良い", "2": "良い", "3": "とても良い" };
-  const SHANTEN_LABEL = { "0": "テンパイ", "1": "1シャンテン", "2": "2シャンテン", "3": "3シャンテン" };
+  const SHANTEN_LABEL = { "0": "テンパイ", "1": "1シャンテン", "2": "2シャンテン", "3": "3シャンテン", "4": "4シャンテン", "5": "5シャンテン" };
   const THEME_LABEL = { none: "なし", tanyao: "タンヤオ", honitsu: "ホンイツ", chinitsu: "チンイツ", toitoi: "トイトイ", yakuhai: "役牌" };
   const SUIT_LABEL = { auto: "色おまかせ", m: "萬子", p: "筒子", s: "索子" };
-  const FIELD_MAX = { hand: 13, draws: 18 };
+  const FIELD_MAX = { hand: 13, draws: 18, block: 34 };
   const PALETTE = ["m", "p", "s"].map(s => {
     const out = [];
     for (let n = 1; n <= 9; n++) { out.push(`${n}${s}`); if (n === 5) out.push(`5${s}r`); }
@@ -104,8 +139,13 @@
   function mountRig(root, onChange) {
     let active = null; // 牌を足す先 {seat, field}
     let rates = false; // 和了率の目安の小窓を開いているか
-    // いま足せる牌か（足す先の枚数の上限と、全席を合わせた同じ牌の枚数）
-    const addable = sp => !!active && settings.rig.seats[active.seat][active.field].length < FIELD_MAX[active.field] && Rig.canAdd(settings.rig, sp);
+    // いま足せる牌か（足す先の枚数の上限。同じ牌は何枚でも足せる。出ない牌だけは赤を除き、同じ種類は1回）
+    const addable = sp => {
+      if (!active) return false;
+      const c = settings.rig.seats[active.seat];
+      if (c[active.field].length >= FIELD_MAX[active.field]) return false;
+      return active.field !== "block" || Rig.canBlock(c, sp);
+    };
     function draw() {
       const cfg = settings.rig;
       const seatHtml = (c, s) => {
@@ -133,6 +173,7 @@
           </div>
           ${row("hand", "配牌")}
           ${row("draws", "ツモ")}
+          ${row("block", "出ない")}
         </section>`;
       };
       root.innerHTML = `<div class="rig ${cfg.enabled ? "" : "off"}">
@@ -160,7 +201,7 @@
       if (rt) { rates = rt.dataset.rates === "toggle" ? !rates : false; return draw(); }
       const bulk = e.target.closest(".palette [data-bulk]");
       if (bulk && active) {
-        // 仲間の牌を1枚ずつ、入るだけ入れる（枚数の上限・同じ牌4枚までを超える分は入れない）
+        // 仲間の牌を1枚ずつ、入るだけ入れる（枚数の上限を超える分と、出ない牌にもう入っている牌は入れない）
         let added = 0;
         for (const sp of BULK[+bulk.dataset.bulk][1]) if (addable(sp)) { cfg.seats[active.seat][active.field].push(sp); added++; }
         if (added) changed();
@@ -259,7 +300,10 @@
     uiMode = "normal"; choices = []; selected = null; setDiff(false);
     asst = callAsst = null; hoverId = hoverKind = focusWait = null;
     stopEv();
+    mlog = mh = null;
     auto.win = auto.tsumogiri = auto.noCall = false;
+    mark.game = mark.last = null; mark.pending = false; mark.n = 0;
+    $("#reviewModal").classList.add("hidden");
     drawAux();
     bubbles.innerHTML = "";
     board.innerHTML = '<div class="felt"></div>';
@@ -292,12 +336,18 @@
     pkt = p; v = p.view; ME = v.seat;
     if (p.retry) sentAsk = -1;
     if (p.ask !== lastAsk || !v.options) { lastAsk = p.ask; uiMode = "normal"; selected = null; choices = []; }
+    if (mortalOk) {
+      if (!mlog || mlog.seat !== v.seat) mlog = new Mortal.Log(v.seat);
+      if (p.retry && !p.events.length) mlog.breakOff(); // つなぎ直して途中のできごとが飛んだ（次の局から）
+      mlog.feed(p.events, v);
+    }
     refreshAssist();
     let ended = false;
     for (const e of p.events) {
       if (e.t === "start") {
         bubble(-1, roundName(e) + (e.honba ? ` ${e.honba}本場` : ""), "round");
         auto.win = auto.tsumogiri = auto.noCall = false;
+        mark.pending = false; mark.last = null; // 前の局の打牌には、もう印を付けない
         drawAux();
         Sound.se("start");
       } else if (e.t === "call") { bubble(e.seat, CALL[e.type]); Sound.se("call"); }
@@ -343,6 +393,7 @@
     board.innerHTML = h;
     applySame();
     $("#rigBadge").classList.toggle("hidden", !pkt.rigShown);
+    drawMark();
   }
   function centerHtml() {
     const doraTiles = [];
@@ -403,6 +454,7 @@
       const def = a.guard && asst && asst.defense ? asst.defense : null; // 現物・スジ・壁（立直者がいるときだけ）
       const top = a.cut && can && ev && ev.top ? ev.top : null; // 期待値がいちばん高い牌（同じ値は全部）
       const isTop = id => !!top && can.has(id) && top.has(Assist.evKey(kindOf(id), isRed(id)));
+      const hints = can ? hintTiles() : new Map(); // Mortal のおすすめ {id → 順位}
       const cls = id => {
         const d = a.cut && can && can.has(id) && asst && asst.discards ? asst.discards.get(id) : null; // 切れる牌にだけ、進む印を付ける
         return [
@@ -415,7 +467,9 @@
       };
       const marks = id => {
         const lv = def ? def[kindOf(id)] : 0;
-        return (lv ? `<i class="def ${DEF_CLS[lv]}">${DEF_LABEL[lv]}</i>` : "") + (isTop(id) ? '<i class="ev-mk"></i>' : "");
+        const r = hints.get(id);
+        return (lv ? `<i class="def ${DEF_CLS[lv]}">${DEF_LABEL[lv]}</i>` : "") + (isTop(id) ? '<i class="ev-mk"></i>' : "") +
+          (r ? `<i class="m-mk r${r}">${r}</i>` : "");
       };
       hand = v.hand.map(id => tile(id, cls(id), `data-id="${id}"`, marks(id))).join("");
       if (v.drawn !== null) hand += tile(v.drawn, "drawn " + cls(v.drawn), `data-id="${v.drawn}"`, marks(v.drawn));
@@ -450,10 +504,39 @@
     asst = callAsst = null;
     riichiMemo.clear();
     const a = myAssist();
+    if (v) requestHint(); // 振り返りに残すため、アシストが全部切でも聞く
     if (!v || !(a.cut || a.hand || a.guard)) return;
     // アシストの計算でつまずいても、対局は止めない（表示だけを出さない）
     try { asst = Assist.analyze(v); if (a.guard) callAsst = Assist.callInfo(v); } catch (e) { console.error(e); asst = callAsst = null; }
     requestEv();
+  }
+
+  // ---------- Mortal の打牌のヒント（切る牌のヒントのまとまり。箱につながるときだけ） ----------
+  // 切る牌のヒントが切の席でも、自分が切る番には聞いておく（振り返りに残すため。画面には出さない。仕様書 6.11章）
+  function requestHint() {
+    if (!(mortalOk && mlog && canInput() && (myAssist().cut || v.options.kind === "turn"))) { mh = null; return; }
+    if (mh && mh.ask === pkt.ask && mh.session === session) return;
+    const my = mh = { ask: pkt.ask, session, done: false, data: null };
+    Mortal.hint(mortalCl, mlog, v).then(d => { my.data = d; }).catch(e => console.warn("Mortal:", e.message)).finally(() => {
+      my.done = true;
+      if (mh === my && port && v && v.hand) render();
+    });
+  }
+  /** いまの問いのヒント（届いていなければ null）。 */
+  const hintNow = () => (mh && mh.done && mh.data && mh.ask === pkt.ask && mh.session === session && canInput() ? mh.data : null);
+  /** 画面に出すヒント（切る牌のヒントが切なら出さない）。 */
+  const hintShown = () => (myAssist().cut ? hintNow() : null);
+  /**
+   * ヒントの印を付ける牌 {id → 順位}。切る牌の評価の高い順に上から3つへ 1〜3（本人決定 2026-11-25。仕様書 6.10章）。
+   * 立直の牌を選んでいる間は、Mortal が立直で切るとした牌だけに 1。
+   */
+  function hintTiles() {
+    const d = hintShown();
+    const out = new Map();
+    if (!d || d.kind !== "turn") return out;
+    if (uiMode === "riichi") { if (d.riichi !== null) out.set(d.riichi, 1); return out; }
+    d.discards.slice(0, 3).forEach((x, i) => out.set(x.id, i + 1));
+    return out;
   }
 
   // ---------- 期待値（裏の Worker で計算する。仕様書 6章⑬） ----------
@@ -617,7 +700,9 @@
     if (!canInput()) return "";
     const o = v.options;
     const b = [];
-    const btn = (act, label, cls) => b.push(`<button type="button" class="abtn ${cls}" data-act="${act}">${label}</button>`);
+    const hd = hintShown(); // Mortal のおすすめの行動のボタンに「AI」の印
+    const aiAct = !hd ? null : hd.kind === "call" ? { ron: "ron", pon: "pon", chi: "chi", kan: "minkan", pass: "pass" }[hd.best] : hd.best === "reach" ? "riichi" : hd.best === "hora" ? "tsumo" : null;
+    const btn = (act, label, cls) => b.push(`<button type="button" class="abtn ${cls}${act === aiAct && uiMode === "normal" ? " ai" : ""}" data-act="${act}">${label}</button>`);
     const adv = list => (callAsst && list.some(c => c.advances) ? " adv" : ""); // 鳴くと手が進む印
     if (uiMode === "choose") {
       // 鳴くと進む印は、描くたびにいまの計算（callAsst。守りと鳴きが切なら null）から決める（選んでいる途中で切り替えられてもすぐ効く）
@@ -642,9 +727,51 @@
   }
 
   // ---------- 補助ボタン（自動和了・ツモ切り・鳴かない）と、立直後の自動ツモ切り ----------
+  // 「迷った」（仕様書 6.11章）は補助ボタンの並びの先頭に、補助ボタンのまとまりが切の席にも出す
   function drawAux() {
-    $("#aux").classList.toggle("hidden", !myAssist().aux);
-    for (const b of document.querySelectorAll("#aux [data-auto]")) b.classList.toggle("on", auto[b.dataset.auto]);
+    const ax = myAssist().aux;
+    for (const b of document.querySelectorAll("#aux [data-auto]")) { b.classList.toggle("hidden", !ax); b.classList.toggle("on", auto[b.dataset.auto]); }
+    drawMark();
+  }
+
+  // ---------- 「迷った」の印（仕様書 6.11章） ----------
+  const myTurn = () => canInput() && v.options.kind === "turn";
+  /** いま押すと印が付く（外れる）場面があるか・付いているか。 */
+  function markState() {
+    if (myTurn()) return { can: true, on: mark.pending };
+    return { can: !!mark.last, on: !!(mark.last && mark.last.marked) };
+  }
+  function drawMark() {
+    const st = markState(), b = $("#markBtn");
+    b.disabled = !st.can;
+    b.classList.toggle("on", st.can && st.on);
+    for (const r of document.querySelectorAll("#overlay [data-mark]")) r.classList.toggle("on", !!(mark.last && mark.last.marked));
+  }
+  /** 直前に切った場面に印を付ける（外す）。付けた・外したら端末に残す。 */
+  function setMarked(on) {
+    const l = mark.last;
+    if (!l || l.marked === on) return;
+    if (on) {
+      if (!mark.game) mark.game = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), at: Date.now(), seat: ME, names: v.names.slice(), length: v.length, scenes: [] };
+      if (mark.game.scenes.length >= Review.SCENES_MAX) return;
+      mark.game.scenes.push(l.scene);
+      mark.game.scenes.sort((a, b) => a.n - b.n);
+    } else if (mark.game) mark.game.scenes = mark.game.scenes.filter(s => s !== l.scene);
+    l.marked = on;
+    if (mark.game) { reviews = Review.put(reviews, mark.game); saveReviews(); }
+  }
+  function onMark() {
+    if (myTurn()) mark.pending = !mark.pending;
+    else if (mark.last) setMarked(!mark.last.marked);
+    drawMark();
+  }
+  /** 自分が切った（submit から）。その場面を覚え、切る前に押していたら印を付ける。 */
+  function noteDiscard(action) {
+    let sc;
+    try { sc = Review.scene(v, action, hintNow()); } catch (e) { console.error(e); return; }
+    sc.n = ++mark.n;
+    mark.last = { scene: sc, marked: false };
+    if (mark.pending) { mark.pending = false; setMarked(true); }
   }
   /** いまの問いに補助ボタンの設定で自動で答えるなら {action, wait}。答えないなら null。 */
   function autoChoice() {
@@ -679,6 +806,7 @@
   function submit(action) {
     if (!canInput()) return;
     const ask = pkt.ask;
+    if (action.type === "discard" && v.options.kind === "turn") noteDiscard(action);
     sentAsk = ask; uiMode = "normal"; selected = null; choices = [];
     render();
     port({ t: "act", ask, action });
@@ -700,7 +828,7 @@
       case "cancel": uiMode = "normal"; choices = []; return render();
       case "choose": return choices[+i] && submit(choices[+i].action);
       case "pon": return choose(o.pon.map((t, n) => ({ tiles: t, call: ["pon", n], action: { type: "pon", tiles: t } })));
-      case "chi": return choose(o.chi.map((t, n) => ({ tiles: t.slice().sort((a, b) => a - b), call: ["chi", n], action: { type: "chi", tiles: t } })));
+      case "chi": return choose(o.chi.map((t, n) => ({ tiles: t.slice().sort(Mahjong.byTile), call: ["chi", n], action: { type: "chi", tiles: t } })));
       case "kan": {
         const all = v.hand.concat(v.drawn !== null ? [v.drawn] : []);
         return choose(o.ankan.map(k => ({ tiles: [all.find(t => kindOf(t) === k)], action: { type: "ankan", kind: k } }))
@@ -763,6 +891,7 @@
     setHover(own, t ? +t.dataset.k : null);
   });
   board.addEventListener("pointerleave", () => setHover(null, null));
+  $("#markBtn").addEventListener("click", () => onMark());
   $("#aux").addEventListener("click", e => {
     const b = e.target.closest("[data-auto]");
     if (!b) return;
@@ -827,6 +956,11 @@
       box.innerHTML = open ? `<b>${esc(info[0])}</b>${esc(info[1])}` : "";
       return;
     }
+    if (e.target.closest("[data-mark]")) {
+      if (mark.last) setMarked(!mark.last.marked);
+      return drawMark();
+    }
+    if (e.target.closest("[data-review]")) return mark.game && openReview(mark.game.id);
     const b = e.target.closest("[data-close]");
     if (!b) return;
     if (b.dataset.close === "next") {
@@ -903,7 +1037,9 @@
       body = `<div class="res-head">${ryukyokuName(res)}</div>${hands}${scoresHtml(res, tags)}`;
     }
     resultRound = round;
-    modal(`<div class="card">${body}<div class="card-foot"><button type="button" class="bigbtn small" data-close="next">次へ</button></div></div>`);
+    // 「迷った」: 局が終わる前に切った牌（放銃した牌など）に、板が出たあとでも印を付けられる（仕様書 6.11章）
+    const mk = mark.last ? `<button type="button" class="bigbtn small ghost mark-res ${mark.last.marked ? "on" : ""}" data-mark>迷った</button>` : "";
+    modal(`<div class="card">${body}<div class="card-foot">${mk}<button type="button" class="bigbtn small" data-close="next">次へ</button></div></div>`);
   }
   function showFinal() {
     const f = v.final;
@@ -913,6 +1049,7 @@
     const my = session;
     modal(`<div class="card"><div class="res-head">終局</div><div class="rank">${lines}</div>
       <div class="card-foot">
+        ${mark.game && mark.game.scenes.length ? `<button type="button" class="bigbtn small ghost" data-review>振り返り</button>` : ""}
         <button type="button" class="bigbtn small ${mode === "guest" ? "" : "ghost"}" data-close="home">${mode === "solo" ? "はじめの画面へ" : "部屋へ戻る"}</button>
         ${mode === "guest" ? "" : '<button type="button" class="bigbtn small" data-close="again">もう一度</button>'}
       </div></div>`).then(val => {
@@ -972,6 +1109,158 @@
     drawHome();
     if (room) sendLobby();
   });
+  // ---------- 振り返り（仕様書 6.11章）。印を付けた場面の盤面と、切る牌ごとの受け入れ・期待値・Mortal のおすすめの表 ----------
+  const rv = { gid: null, idx: 0, fromList: false, sel: null }; // 見ている対局（null は一覧）・場面の番号・一覧から開いたか・詳しく見る行（Assist.evKey）
+  const rvEv = new WeakMap(); // 場面 → 期待値 {done, map: Map<Assist.evKey, {ev, win, choice}> | null}
+  let rvWorker = null, rvPending = null; // 期待値を計算している Worker と、その場面
+  const rvGame = () => reviews.games.find(g => g.id === rv.gid) || null;
+  /** gid: 開く対局（null なら一覧から）。 */
+  function openReview(gid) {
+    reviews = gid && mark.game && mark.game.id === gid ? reviews : loadReviews(); // ほかのタブで増えた分も見えるように読み直す
+    rv.gid = gid; rv.idx = 0; rv.fromList = !gid; rv.sel = null;
+    drawReview();
+    $("#reviewModal").classList.remove("hidden");
+  }
+  function closeReview() {
+    $("#reviewModal").classList.add("hidden");
+    stopRvEv();
+  }
+  function stopRvEv() {
+    if (rvWorker) { rvWorker.terminate(); rvWorker = null; }
+    if (rvPending) { rvEv.delete(rvPending); rvPending = null; } // 途中で止めた分は、次に開いたとき計算し直す
+  }
+  /** 場面の期待値を裏で計算する（対局中の帯と同じ計算。遠い手・立直のあとは出さない）。 */
+  function startRvEv(sc, rows) {
+    if (rvEv.has(sc) || !rows.length || Math.min(...rows.map(r => r.shanten)) > EV_MAX_SHANTEN || typeof Worker === "undefined") return;
+    let inp = null;
+    try { inp = Assist.evInput(sc.view); } catch (e) { console.error(e); }
+    if (!inp) return;
+    stopRvEv();
+    const st = { done: false, map: null };
+    rvEv.set(sc, st);
+    rvPending = sc;
+    const finish = d => {
+      st.done = true;
+      if (d && d.ok && !d.tooMany) {
+        st.map = new Map();
+        for (const c of d.candidates) if (c.ev !== null) st.map.set(Assist.evKey(c.index, c.red), c);
+      }
+      if (rvWorker) { rvWorker.terminate(); rvWorker = null; }
+      rvPending = null;
+      if (!$("#reviewModal").classList.contains("hidden")) drawReview();
+    };
+    try { rvWorker = new Worker("js/ev-worker.js"); } catch (e) { rvEv.delete(sc); rvPending = null; return; }
+    rvWorker.onmessage = e => finish(e.data);
+    rvWorker.onerror = () => finish(null);
+    rvWorker.postMessage({ id: 1, input: inp.input, exclude: inp.exclude });
+  }
+  const whenText = t => {
+    const d = new Date(t), p = n => String(n).padStart(2, "0");
+    return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+  function reviewListHtml() {
+    if (!reviews.games.length) return '<div class="st-none">まだ記録がありません</div>';
+    return `<div class="rv-list">${reviews.games.map(g => `<div class="rv-item" data-rv-open="${esc(g.id)}">
+      <span class="dt">${whenText(g.at)}</span><span class="len">${g.length === "east" ? "東風戦" : "半荘戦"}</span>
+      <span class="nm">${g.names.filter((n, s) => s !== g.seat).map(esc).join("・")}</span>
+      <span class="ct">${g.scenes.length}場面</span>
+      <button type="button" class="clr" data-rv-del="${esc(g.id)}">消す</button></div>`).join("")}</div>`;
+  }
+  const AI_BEST = { hora: "ツモ", ankan: "カン", kakan: "カン", ryukyoku: "九種九牌" };
+  function sceneHtml(sc) {
+    const sv = sc.view, me = sv.seat;
+    const dora = sv.doraInd.map(t => MJ.doraOf(kindOf(t)));
+    const dc = id => (isDora(id, dora) ? " dora" : "");
+    const seatLine = (s, lab) => {
+      let side = false;
+      const river = sv.rivers[s].map(e => {
+        if (e.riichi) side = true; // 宣言牌が鳴かれたら、次の牌を横にする（盤面と同じ）
+        if (e.called) return "";
+        const h = tile(e.id, (side ? "side" : "") + (e.tsumogiri ? " tg" : "") + dc(e.id));
+        side = false;
+        return h;
+      }).join("");
+      return `<div class="rv-seat ${s === me ? "me" : ""}"><div class="rv-who"><span class="lab">${lab}</span>
+        <span class="wd">${WIND[(s - sv.oya + 4) % 4]}</span><span class="nm">${esc(sv.names[s])}</span><span class="sc">${sv.scores[s]}</span>
+        ${sv.riichi[s] ? '<span class="rc">リーチ</span>' : ""}</div>
+        <div class="rv-river">${river}</div>${sv.melds[s].length ? `<div class="rv-melds">${sv.melds[s].map(m => meldHtml(m, s)).join("")}</div>` : ""}</div>`;
+    };
+    const cutCls = id => (id === sc.cut ? " cut" : "");
+    const hand = sv.hand.map(id => tile(id, cutCls(id) + dc(id))).join("") +
+      (sv.drawn !== null && sv.drawn !== undefined ? tile(sv.drawn, "drawn" + cutCls(sv.drawn) + dc(sv.drawn)) : "");
+
+    const rows = Review.rows(sc);
+    startRvEv(sc, rows);
+    const e = rvEv.get(sc);
+    const hasAi = Array.isArray(sc.ai);
+    const topUke = Math.max(0, ...rows.filter(r => r.keep).map(r => r.total));
+    const evOf = r => (e && e.done && e.map ? e.map.get(r.key) : null);
+    const topEv = Math.max(0, ...rows.map(r => { const c = evOf(r); return c ? c.ev : 0; }));
+    const aiRiichiKey = sc.aiRiichi !== null ? Assist.evKey(kindOf(sc.aiRiichi), isRed(sc.aiRiichi)) : null;
+    const sel = rows.find(r => r.key === rv.sel) || rows.find(r => r.cut) || rows[0];
+    const evCells = r => {
+      if (!e) return "<td>—</td><td>—</td>";
+      if (!e.done) return '<td class="wait" colspan="2">計算中</td>';
+      const c = evOf(r);
+      if (!c) return "<td>—</td><td>—</td>";
+      return `<td>${(c.win * 100).toFixed(1)}%</td><td class="${c.ev >= topEv - 1e-6 && topEv > 0 ? "top" : ""}">${c.choice === "riichi" ? '<span class="rv-rc">リーチ</span>' : ""}${Math.round(c.ev)}点</td>`;
+    };
+    const table = !rows.length ? "" : `<div class="st-wrap"><table class="rv-table">
+      <tr><th>切る牌</th><th>切ったあと</th><th>受け入れ</th><th>和了率</th><th>期待値</th>${hasAi ? "<th>AI</th>" : ""}</tr>
+      ${rows.map(r => `<tr class="${r.cut ? "cut" : ""} ${r === sel ? "sel" : ""}" data-rv-row="${r.key}">
+        <th><span class="rv-k">${tileBy(r.k, r.red)}${r.cut ? `<span class="rv-cut">${sc.riichi ? "リーチで切った" : "切った"}</span>` : ""}</span></th>
+        <td class="${r.keep ? "" : "back"}">${r.shanten <= 0 ? "テンパイ" : r.shanten + "シャンテン"}${r.keep ? "" : "（戻し）"}</td>
+        <td class="${r.keep && r.total === topUke && topUke > 0 ? "top" : ""}">${r.total}枚</td>
+        ${evCells(r)}
+        ${hasAi ? `<td>${r.ai ? `<i class="rv-ai r${r.ai}">${r.ai}</i>` : ""}${r.key === aiRiichiKey ? '<span class="rv-rc">リーチ</span>' : ""}</td>` : ""}
+      </tr>`).join("")}</table></div>`;
+    const ukeLine = !sel ? "" : `<div class="rv-uke"><span class="lab">${tileBy(sel.k, sel.red)}を切ると、${sel.shanten <= 0 ? "待ち" : "進む牌"}（${sel.total}枚）</span>
+      <div class="tiles">${sel.uke.map(u => `<span class="u">${kindTile(u.k)}<b>${u.left}</b></span>`).join("") || "なし"}</div></div>`;
+    const aiNote = sc.aiBest && AI_BEST[sc.aiBest] ? `<div class="rv-note">AI のいちばんは「${AI_BEST[sc.aiBest]}」</div>` : "";
+    const opp = [3, 2, 1].map(pos => seatLine((me + pos) % 4, SEAT_LABEL[pos])).join("");
+    return `<div class="rv-info">${roundName(sv)}${sv.honba ? ` ${sv.honba}本場` : ""}<span>この局の${sv.rivers[me].length + 1}打目</span><span>残り ${sv.liveLeft}</span>
+        <span class="rv-dora">ドラ表示 ${sv.doraInd.map(t => tile(t)).join("")}</span></div>
+      <div class="rv-board">${opp}${seatLine(me, SEAT_LABEL[0])}</div>
+      <div class="rv-hand">${hand}</div>
+      ${table}${ukeLine}${aiNote}`;
+  }
+  function drawReview() {
+    const g = rv.gid ? rvGame() : null;
+    if (rv.gid && !g) rv.gid = null;
+    let h;
+    if (!g) {
+      stopRvEv();
+      h = `<div class="as-head"><span class="ttl">振り返り</span></div>${reviewListHtml()}`;
+    } else {
+      rv.idx = Math.max(0, Math.min(rv.idx, g.scenes.length - 1));
+      const n = g.scenes.length;
+      h = `<div class="as-head rv-head"><span class="ttl">振り返り</span>
+          ${rv.fromList ? '<button type="button" class="pill" data-rv-list>一覧へ</button>' : ""}
+          <span class="rv-nav"><button type="button" class="pill" data-rv-step="-1" ${rv.idx === 0 ? "disabled" : ""}>前</button>
+          <span>${rv.idx + 1} / ${n}</span><button type="button" class="pill" data-rv-step="1" ${rv.idx >= n - 1 ? "disabled" : ""}>次</button></span></div>
+        ${sceneHtml(g.scenes[rv.idx])}`;
+    }
+    $("#reviewBody").innerHTML = h;
+  }
+  $("#reviewBody").addEventListener("click", e => {
+    const del = e.target.closest("[data-rv-del]");
+    if (del) {
+      if (!confirm("この対局の振り返りを消しますか？（元に戻せません）")) return;
+      reviews = { v: 1, games: reviews.games.filter(g => g.id !== del.dataset.rvDel) };
+      saveReviews();
+      drawReview();
+      return drawHome();
+    }
+    const open = e.target.closest("[data-rv-open]");
+    if (open) { rv.gid = open.dataset.rvOpen; rv.idx = 0; rv.sel = null; return drawReview(); }
+    if (e.target.closest("[data-rv-list]")) { rv.gid = null; return drawReview(); }
+    const step = e.target.closest("[data-rv-step]");
+    if (step) { stopRvEv(); rv.idx += +step.dataset.rvStep; rv.sel = null; return drawReview(); }
+    const row = e.target.closest("[data-rv-row]");
+    if (row) { rv.sel = +row.dataset.rvRow; return drawReview(); }
+  });
+  $("#reviewClose").addEventListener("click", () => closeReview());
+
   function showError(err) {
     console.error(err);
     modal(`<div class="card"><div class="res-head">エラー</div><p>${esc(err && err.message)}</p>
@@ -1014,7 +1303,7 @@
     const my = { gid: room ? room.gid : 0 };
     openGame(msg => table && table.submit(0, msg));
     table = new Table({
-      game, humans, cpu: settings.cpu, openHands: settings.openHands, timing: tableTiming(), onError: showError,
+      game, humans, cpu: cpuLevel(), mortal: mortalCl, Mortal, openHands: settings.openHands, timing: tableTiming(), onError: showError,
       send(seat, p) {
         if (seat === 0) receive(clone(p));
         else if (room && room.seatId[seat]) room.net.send({ t: "state", gid: my.gid, p }, room.seatId[seat]);
@@ -1281,13 +1570,18 @@
     }
   }
   function drawHome() {
+    probeMortal();
     const asGuest = !!JOIN_CODE;
     for (const el of document.querySelectorAll(".host-only")) el.classList.toggle("hidden", asGuest);
     $("#guestBox").classList.toggle("hidden", !asGuest);
     for (const b of document.querySelectorAll("#lengthSeg button")) b.classList.toggle("on", b.dataset.v === settings.length);
-    for (const b of document.querySelectorAll("#cpuSeg button")) b.classList.toggle("on", b.dataset.v === settings.cpu);
+    for (const b of document.querySelectorAll("#cpuSeg button")) b.classList.toggle("on", b.dataset.v === cpuLevel());
+    $('#cpuSeg [data-v="mortal"]').classList.toggle("hidden", !mortalOk);
     for (const b of document.querySelectorAll("#openSeg button")) b.classList.toggle("on", (b.dataset.v === "open") === settings.openHands);
     $("#statsBtn").classList.toggle("hidden", !statsRows().length); // 記録が1人分以上あるとき
+    reviews = loadReviews();
+    $("#reviewBtn").classList.toggle("hidden", !reviews.games.length); // 印を付けた対局が1つ以上あるとき
+    $("#homePills").classList.toggle("hidden", $("#statsBtn").classList.contains("hidden") && !reviews.games.length);
     const note = homeNote ? `<div class="room-note">${esc(homeNote)}</div>` : "";
     if (asGuest) {
       let h;
@@ -1429,6 +1723,7 @@
   $("#quitBtn").addEventListener("click", () => quitGame());
   $("#statsBtn").addEventListener("click", () => { drawStats(); $("#statsModal").classList.remove("hidden"); });
   $("#statsClose").addEventListener("click", () => $("#statsModal").classList.add("hidden"));
+  $("#reviewBtn").addEventListener("click", () => openReview(null));
 
   if (JOIN_CODE) {
     mode = "guest";
@@ -1444,5 +1739,5 @@
   drawHome();
 
   // 確かめ用（コンソールから対局の中を見る）
-  window.SettaiDebug = { get game() { return table && table.g; }, get table() { return table; }, get room() { return room; }, get guest() { return guest; }, get assist() { return myAssist(); }, settings };
+  window.SettaiDebug = { get game() { return table && table.g; }, get table() { return table; }, get room() { return room; }, get guest() { return guest; }, get assist() { return myAssist(); }, get mortal() { return { ok: mortalOk, hint: mh, log: mlog }; }, settings };
 })();

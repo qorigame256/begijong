@@ -32,13 +32,13 @@
 })(typeof self !== "undefined" ? self : this, function (MJ) {
   "use strict";
 
-  const kindOf = id => id >> 2;
-  const isRed = id => id === 16 || id === 52 || id === 88;
+  const kindOf = id => (id % 136) >> 2; // 136 以上は牌操作で作った写し（rig.js の _extra）
+  const isRed = id => { const b = id % 136; return b === 16 || b === 52 || b === 88; };
   const INF = 99;
   const MARK_MAX = 3; // 打牌の印（進む牌の印）を付ける牌の種類の上限（本人決定 2026-11-20。仕様書 6章①）
   function countsOf(ids) {
     const c = new Array(34).fill(0);
-    for (const t of ids) c[t >> 2]++;
+    for (const t of ids) c[kindOf(t)]++;
     return c;
   }
 
@@ -304,6 +304,9 @@
     for (const msx of view.melds) for (const m of msx) m.tiles.forEach(add);
     for (const rv of view.rivers) for (const e of rv) if (!e.called) add(e.id);
     view.doraInd.forEach(add);
+    // 同じ牌が5枚以上見えている（牌操作の写しがある）ときは出さない（mj_engine.js は1種類4枚までしか数えられない）
+    const all = countsOf(ids);
+    for (let k = 0; k < 34; k++) if (all[k] + vis[k] > 4) return null;
     const can = new Set(o.discards.map(kindOf));
     return {
       input: {

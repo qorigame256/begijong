@@ -16,11 +16,11 @@
 })(typeof self !== "undefined" ? self : this, function (MJ) {
   "use strict";
 
-  const kindOf = id => id >> 2;
-  const isRed = id => id === 16 || id === 52 || id === 88;
+  const kindOf = id => (id % 136) >> 2; // 136 以上は牌操作で作った写し（rig.js の _extra）
+  const isRed = id => { const b = id % 136; return b === 16 || b === 52 || b === 88; };
   function countsOf(ids) {
     const c = new Array(34).fill(0);
-    for (const t of ids) c[t >> 2]++;
+    for (const t of ids) c[kindOf(t)]++;
     return c;
   }
   const isTanyaoKind = k => k < 27 && k % 9 >= 1 && k % 9 <= 7;
@@ -112,7 +112,7 @@
       for (let j = 0; j < 34; j++) {
         if (c[j] >= 4) continue;
         c[j]++;
-        if (MJ.shanten(c, nm) < s) uke += 4 - vis[j];
+        if (MJ.shanten(c, nm) < s) uke += Math.max(0, 4 - vis[j]); // 牌操作の写しで5枚以上見えても負にしない
         c[j]--;
       }
       c[k]++;

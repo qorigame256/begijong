@@ -1,7 +1,8 @@
 /*
  * game.js — 対局の進行（四人麻雀・雀魂の段位戦ルール）。画面を持たない。ブラウザでは window.Mahjong、node では require。
  *
- * 牌は 0〜135 の通し番号（id）。種類（kind）= id >> 2（calc.js と同じ 0〜33）。赤5は id 16（5m）・52（5p）・88（5s）。
+ * 牌は 0〜135 の通し番号（id）。種類（kind）= (id % 136) >> 2（calc.js と同じ 0〜33）。赤5は id 16（5m）・52（5p）・88（5s）。
+ * 136 以上は、牌操作で同じ牌を5枚以上出すために rig.js が作った写し（136 で割った余りが元の牌）。
  * 山は並びを先に決めない。残りの牌の袋（r.pool）から、引くたびに rig.js が1枚選ぶ（牌操作なしなら等確率＝普通の山と同じ）。
  * ドラ表示牌・嶺上牌も同じ袋から取り、r.liveLeft（残りツモ数。最初 70）で山の終わりを数える。
  *
@@ -15,13 +16,15 @@
 })(typeof self !== "undefined" ? self : this, function (MJ, Rig) {
   "use strict";
 
-  const kindOf = id => id >> 2;
-  const isRed = id => id === 16 || id === 52 || id === 88;
+  const kindOf = id => (id % 136) >> 2; // 136 以上は牌操作で作った写し（rig.js の _extra）
+  const isRed = id => { const b = id % 136; return b === 16 || b === 52 || b === 88; };
   function countsOf(ids) {
     const c = new Array(34).fill(0);
-    for (const t of ids) c[t >> 2]++;
+    for (const t of ids) c[kindOf(t)]++;
     return c;
   }
+  /** 牌の並べ替え（写しは元の牌の隣に並ぶ）。 */
+  const byTile = (a, b) => (a % 136) - (b % 136) || a - b;
   function mulberry32(seed) {
     let a = seed >>> 0;
     return function () {
@@ -111,7 +114,7 @@
         riichiPending: -1, riichiDouble: false, pao: [{}, {}, {}, {}], last: null,
       };
       this.rig.deal(this);
-      for (const h of this.r.hands) h.sort((a, b) => a - b);
+      for (const h of this.r.hands) h.sort(byTile);
       this._flipDora();
       this.result = null;
       this.next = null;
@@ -157,7 +160,7 @@
         if (MJ.shanten(c, nm) === -1 && this._score(seat, r.drawn, { tsumo: true })) o.tsumo = true;
         if (r.liveLeft > 0 && r.kanCount < 4) {
           for (let k = 0; k < 34; k++) {
-            if (c[k] === 4 && (!inRiichi || this._riichiAnkanOk(seat, k))) o.ankan.push(k);
+            if (c[k] >= 4 && (!inRiichi || this._riichiAnkanOk(seat, k))) o.ankan.push(k);
           }
           if (!inRiichi) {
             for (const id of hand) {
@@ -295,7 +298,7 @@
       const tsumogiri = id === r.drawn;
       r.riichiDouble = r.noCalls && r.river[seat].length === 0;
       hand.splice(hand.indexOf(id), 1);
-      hand.sort((a, b) => a - b);
+      hand.sort(byTile);
       r.river[seat].push({ id, tsumogiri, riichi: declare, called: false });
       r.drawn = null; r.rinshan = false; r.afterCall = false; r.kuikae = [];
       r.furitenTemp[seat] = false;
@@ -313,7 +316,7 @@
         if (r.liveLeft > 0 && !r.riichi[s]) {
           const same = r.hands[s].filter(t => kindOf(t) === k);
           if (same.length >= 2 && r.hands[s].length - 2 > same.length - 2) opt.pon = pickVariants(same, 2);
-          if (same.length === 3 && r.kanCount < 4) opt.kan = true;
+          if (same.length >= 3 && r.kanCount < 4) opt.kan = true; // 4枚以上は牌操作の写しがあるとき
           if (d === 1 && k < 27) opt.chi = this._chiVariants(s, k);
         }
         if (opt.ron || opt.pon.length || opt.chi.length || opt.kan) pend[s] = opt;
@@ -388,7 +391,7 @@
       const big = order.find(s => resp[s].type === "pon" || resp[s].type === "kan");
       if (big !== undefined) {
         if (resp[big].type === "pon") return this._meldCall(big, "pon", resp[big].tiles);
-        return this._meldCall(big, "minkan", r.hands[big].filter(t => kindOf(t) === kindOf(last.id)));
+        return this._meldCall(big, "minkan", r.hands[big].filter(t => kindOf(t) === kindOf(last.id)).slice(0, 3));
       }
       const chi = order.find(s => resp[s].type === "chi");
       if (chi !== undefined) return this._meldCall(chi, "chi", resp[chi].tiles);
@@ -401,7 +404,7 @@
       for (const t of own) hand.splice(hand.indexOf(t), 1);
       const riverTile = r.river[from][r.river[from].length - 1];
       riverTile.called = true;
-      r.melds[seat].push({ type, tiles: own.concat([id]).sort((a, b) => a - b), called: id, from });
+      r.melds[seat].push({ type, tiles: own.concat([id]).sort(byTile), called: id, from });
       r.noCalls = false;
       r.ippatsu = [false, false, false, false];
       r.turn = seat; r.drawn = null;
@@ -426,8 +429,8 @@
     _ankan(seat, k) {
       const r = this.r, hand = r.hands[seat];
       this._flipPendingKanDora();
-      const ids = hand.filter(t => kindOf(t) === k);
-      r.hands[seat] = hand.filter(t => kindOf(t) !== k);
+      const ids = hand.filter(t => kindOf(t) === k).slice(0, 4); // 5枚以上（牌操作の写し）なら残りは手に残す
+      r.hands[seat] = hand.filter(t => !ids.includes(t));
       r.melds[seat].push({ type: "ankan", tiles: ids, called: null, from: null });
       r.noCalls = false; r.drawn = null;
       this._emit({ t: "call", seat, type: "ankan", from: seat });
@@ -648,5 +651,5 @@
     }
   }
 
-  return { Game, kindOf, isRed, countsOf, waitsOf, mulberry32, kuikaeKinds, START_SCORE, GOAL_SCORE };
+  return { Game, kindOf, isRed, byTile, countsOf, waitsOf, mulberry32, kuikaeKinds, START_SCORE, GOAL_SCORE };
 });
