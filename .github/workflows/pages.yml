@@ -1,4 +1,7 @@
 # main に送られたら、リポジトリの中身を GitHub Pages に公開する
+# 荷物を上げる（build）と載せる（deploy）を別の job に分け、載せるのに失敗したら 30 秒待って1回だけやり直す。
+# 2026-11 に、上げた直後の荷物を deploy-pages が見つけられず「No artifacts named "github-pages"」で落ちることが続いたため
+# （GitHub 側の不具合。上げる・載せるを1つの job にしていた形で3回続けて落ちた）。
 name: Pages
 
 on:
@@ -16,16 +19,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
           path: .
-      - id: deployment
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.retry.outputs.page_url || steps.first.outputs.page_url }}
+    steps:
+      - id: first
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+      - if: steps.first.outcome == 'failure'
+        run: sleep 30
+      - id: retry
+        if: steps.first.outcome == 'failure'
         uses: actions/deploy-pages@v5
