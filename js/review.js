@@ -6,10 +6,13 @@
  *     対局: {id, at: 始めて印を付けた時刻（ミリ秒）, seat: 自分の席, names[4], length, scenes: [場面]}
  *     場面: {n: 対局の中の打牌の通し番号, view: 切る番の自分の席の view（result・final は除く）, cut: 切った牌の id, riichi: 立直して切ったか,
  *           ai: Mortal のおすすめの切る牌の id を評価の高い順に3つまで（聞けなかったら null）, aiRiichi: Mortal が立直で切るとした牌の id | null,
- *           aiBest: Mortal のいちばんの行動（"dahai" | "reach" | "hora" | "ankan" など。聞けなかったら null）}
+ *           aiBest: Mortal のいちばんの行動（"dahai" | "reach" | "hora" | "ankan" など。聞けなかったら null）,
+ *           memo: 本人が振り返りで書いたメモ（MEMO_MAX 文字まで。無ければ ""）}
  *   Review.normalize(何でも) → 決まった形の記録（読めない分は捨てる）
  *   Review.scene(view, action, hint) → 場面（hint は mortal.js の hint の答え。無ければ null）
  *   Review.put(store, game) → game を先頭に入れ直した記録（場面が空なら外す。GAMES_MAX 対局まで）
+ *   Review.drop(store, gid, n) → 対局 gid から通し番号 n の場面を外した記録（場面が空になれば対局ごと外す。並びは変えない）
+ *   Review.memoText(何でも) → メモに残す形の文字列（MEMO_MAX 文字まで）
  *   Review.rows(scene) → 表の行 [{key, id, k, red, shanten, total, uke, keep, cut, ai}]（切ったあとのシャンテン数の小さい順 → 受け入れの多い順）
  *     ai = Mortal の順位 1〜3（無ければ 0）。期待値は ui.js が Worker で計算して key（Assist.evKey）で突き合わせる。
  */
@@ -22,6 +25,8 @@
   const GAMES_MAX = 20; // 端末に残す対局の数（印を付けた対局の新しい方から）
   const SCENES_MAX = 40; // 1対局に残す場面の数
   const AI_MAX = 3; // Mortal のおすすめを残す数（手牌の 1〜3 の印と同じ）
+  const MEMO_MAX = 200; // 1場面のメモの文字数
+  const memoText = x => (typeof x === "string" ? [...x].slice(0, MEMO_MAX).join("") : "");
 
   const kindOf = id => (id % 136) >> 2; // 136 以上は牌操作で作った写し（rig.js の _extraId）
   const isRed = id => { const b = id % 136; return b === 16 || b === 52 || b === 88; };
@@ -35,7 +40,7 @@
       n: 0, view: snap, cut: action.id, riichi: !!action.riichi,
       ai: h ? h.discards.slice(0, AI_MAX).map(x => x.id) : null,
       aiRiichi: h && isId(h.riichi) ? h.riichi : null,
-      aiBest: h ? String(h.best) : null,
+      aiBest: h ? String(h.best) : null, memo: "",
     };
   }
 
@@ -53,6 +58,7 @@
           n: Number.isInteger(s.n) ? s.n : 0, view: s.view, cut: s.cut, riichi: s.riichi === true,
           ai: Array.isArray(s.ai) ? s.ai.filter(isId).slice(0, AI_MAX) : null,
           aiRiichi: isId(s.aiRiichi) ? s.aiRiichi : null, aiBest: typeof s.aiBest === "string" ? s.aiBest : null,
+          memo: memoText(s.memo),
         }));
         if (!scenes.length) continue;
         games.push({
@@ -72,6 +78,16 @@
     return { v: 1, games: games.slice(0, GAMES_MAX) };
   }
 
+  function drop(store, gid, n) {
+    const games = [];
+    for (const g of store.games) {
+      if (g.id !== gid) { games.push(g); continue; }
+      const scenes = g.scenes.filter(s => s.n !== n);
+      if (scenes.length) games.push(Object.assign({}, g, { scenes }));
+    }
+    return { v: 1, games };
+  }
+
   function rows(sc) {
     const a = Assist.analyze(sc.view);
     if (!a || !a.discards) return [];
@@ -87,5 +103,5 @@
     return [...byKey.values()].sort((x, y) => x.shanten - y.shanten || y.total - x.total || x.k - y.k || (x.red ? 1 : 0) - (y.red ? 1 : 0));
   }
 
-  return { normalize, scene, put, rows, GAMES_MAX, SCENES_MAX };
+  return { normalize, scene, put, drop, rows, memoText, GAMES_MAX, SCENES_MAX, MEMO_MAX };
 });

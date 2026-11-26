@@ -1117,9 +1117,22 @@
   /** gid: 開く対局（null なら一覧から）。 */
   function openReview(gid) {
     reviews = gid && mark.game && mark.game.id === gid ? reviews : loadReviews(); // ほかのタブで増えた分も見えるように読み直す
+    syncMark();
     rv.gid = gid; rv.idx = 0; rv.fromList = !gid; rv.sel = null;
     drawReview();
     $("#reviewModal").classList.remove("hidden");
+  }
+  /** 振り返りの記録を読み直した・変えたあと、対局中の印（mark）を記録の側に合わせる
+   *  （古い写しを Review.put で入れ直すと、消した場面が戻り、書いたメモが消えるため）。 */
+  function syncMark() {
+    if (!mark.game) return;
+    const g = reviews.games.find(x => x.id === mark.game.id) || null;
+    mark.game = g;
+    if (mark.last && mark.last.marked) {
+      const s = g && g.scenes.find(x => x.n === mark.last.scene.n);
+      if (s) mark.last.scene = s; else mark.last.marked = false;
+    }
+    drawMark();
   }
   function closeReview() {
     $("#reviewModal").classList.add("hidden");
@@ -1222,6 +1235,7 @@
         <span class="rv-dora">ドラ表示 ${sv.doraInd.map(t => tile(t)).join("")}</span></div>
       <div class="rv-board">${opp}${seatLine(me, SEAT_LABEL[0])}</div>
       <div class="rv-hand">${hand}</div>
+      <textarea class="rv-memo" data-rv-memo rows="2" maxlength="${Review.MEMO_MAX}" placeholder="メモ">${esc(sc.memo || "")}</textarea>
       ${table}${ukeLine}${aiNote}`;
   }
   function drawReview() {
@@ -1237,17 +1251,42 @@
       h = `<div class="as-head rv-head"><span class="ttl">振り返り</span>
           ${rv.fromList ? '<button type="button" class="pill" data-rv-list>一覧へ</button>' : ""}
           <span class="rv-nav"><button type="button" class="pill" data-rv-step="-1" ${rv.idx === 0 ? "disabled" : ""}>前</button>
-          <span>${rv.idx + 1} / ${n}</span><button type="button" class="pill" data-rv-step="1" ${rv.idx >= n - 1 ? "disabled" : ""}>次</button></span></div>
+          <span>${rv.idx + 1} / ${n}</span><button type="button" class="pill" data-rv-step="1" ${rv.idx >= n - 1 ? "disabled" : ""}>次</button></span>
+          <button type="button" class="clr" data-rv-drop>この場面を消す</button></div>
         ${sceneHtml(g.scenes[rv.idx])}`;
     }
+    // 期待値の計算が終わると描き直すので、メモを書いている途中なら入力の位置を戻す
+    const a = document.activeElement, typing = a && a.matches && a.matches("#reviewBody [data-rv-memo]");
+    const caret = typing ? [a.selectionStart, a.selectionEnd, a.scrollTop] : null;
     $("#reviewBody").innerHTML = h;
+    const m = typing && $("#reviewBody [data-rv-memo]");
+    if (m) { m.focus(); m.setSelectionRange(caret[0], caret[1]); m.scrollTop = caret[2]; }
   }
+  $("#reviewBody").addEventListener("input", e => {
+    const t = e.target.closest("[data-rv-memo]"), g = rvGame();
+    if (!t || !g || !g.scenes[rv.idx]) return;
+    g.scenes[rv.idx].memo = Review.memoText(t.value);
+    saveReviews();
+  });
   $("#reviewBody").addEventListener("click", e => {
     const del = e.target.closest("[data-rv-del]");
     if (del) {
       if (!confirm("この対局の振り返りを消しますか？（元に戻せません）")) return;
       reviews = { v: 1, games: reviews.games.filter(g => g.id !== del.dataset.rvDel) };
       saveReviews();
+      syncMark();
+      drawReview();
+      return drawHome();
+    }
+    if (e.target.closest("[data-rv-drop]")) {
+      const g = rvGame(), sc = g && g.scenes[rv.idx];
+      if (!sc || !confirm("この場面を振り返りから消しますか？（元に戻せません）")) return;
+      stopRvEv();
+      reviews = Review.drop(reviews, g.id, sc.n);
+      saveReviews();
+      syncMark();
+      if (!rvGame()) rv.gid = null; // 最後の場面だったら対局ごと消えるので一覧へ
+      rv.sel = null;
       drawReview();
       return drawHome();
     }

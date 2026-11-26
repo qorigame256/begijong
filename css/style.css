@@ -677,6 +677,11 @@ button { font-family: inherit; color: inherit; }
 .rv-head { flex-wrap: wrap; gap: 12px; }
 .rv-nav { margin-left: auto; display: flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
 .rv-nav .pill:disabled { opacity: .35; cursor: default; }
+.rv-head .clr { font-size: 12px; padding: 3px 9px; border-radius: 99px; background: none; border: 1px solid rgba(255, 255, 255, .25); color: #a9b8b2; cursor: pointer; }
+.rv-memo { display: block; box-sizing: border-box; width: 100%; margin: 0 0 12px; padding: 8px 12px; resize: vertical; border-radius: 10px;
+  background: rgba(0, 0, 0, .25); border: 1px solid rgba(255, 255, 255, .12); color: #f2ead8; font: 14px/1.5 var(--sans); }
+.rv-memo:focus { outline: none; border-color: rgba(216, 181, 106, .6); }
+.rv-memo::placeholder { color: #7f918a; }
 .rv-info { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-bottom: 10px; font-family: var(--serif); font-size: 17px; color: var(--gold2); }
 .rv-info > span { font-family: var(--sans); font-size: 13px; color: #a9b8b2; }
 .rv-dora { display: inline-flex; align-items: center; gap: 4px; }
