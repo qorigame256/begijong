@@ -736,17 +736,23 @@
 
   // ---------- 「迷った」の印（仕様書 6.11章） ----------
   // 切る番と鳴きの問い（ポン・チー・カン・ロン）のどちらでも、答える前に押せば答えた場面に付く（仕様書 6.11章「鳴きの判断の振り返り」）
+  // 直前の場面に印が付いたら、ボタンは未選択の見た目に戻し（付いたことは右上の小さな印 .done）、他家の番に押すと次の自分の判断への予約（mark.pending）に
+  // なる（本人決定 2026-11-27。前は押すと直前の印が外れ、他家の番に次の判断へ付けようとすると「付いている」に見えた）。直前の印を外すのは局の結果の板と振り返り
   const myTurn = () => canInput() && (v.options.kind === "turn" || v.options.kind === "call");
-  /** いま押すと印が付く（外れる）場面があるか・付いているか。 */
+  const lastMarked = () => !!(mark.last && mark.last.marked);
+  /** 押すと何が起きるか（"pending" 予約の付け外し・"last" 直前の場面の付け外し・null 押せない）と、ボタンを点けるか・直前に付いた印を出すか。 */
   function markState() {
-    if (myTurn()) return { can: true, on: mark.pending };
-    return { can: !!mark.last, on: !!(mark.last && mark.last.marked) };
+    const playing = !!v && v.phase !== "roundEnd" && v.phase !== "gameEnd";
+    if (myTurn() || (playing && (!mark.last || mark.last.marked))) return { act: "pending", on: mark.pending, done: !myTurn() && lastMarked() };
+    if (mark.last) return { act: "last", on: lastMarked(), done: false };
+    return { act: null, on: false, done: false };
   }
   function drawMark() {
     const st = markState(), b = $("#markBtn");
-    b.disabled = !st.can;
-    b.classList.toggle("on", st.can && st.on);
-    for (const r of document.querySelectorAll("#overlay [data-mark]")) r.classList.toggle("on", !!(mark.last && mark.last.marked));
+    b.disabled = !st.act;
+    b.classList.toggle("on", !!st.act && st.on);
+    b.classList.toggle("done", st.done);
+    for (const r of document.querySelectorAll("#overlay [data-mark]")) r.classList.toggle("on", lastMarked());
   }
   /** 直前に切った場面に印を付ける（外す）。付けた・外したら端末に残す。 */
   function setMarked(on) {
@@ -762,8 +768,9 @@
     if (mark.game) { reviews = Review.put(reviews, mark.game); saveReviews(); }
   }
   function onMark() {
-    if (myTurn()) mark.pending = !mark.pending;
-    else if (mark.last) setMarked(!mark.last.marked);
+    const st = markState();
+    if (st.act === "pending") mark.pending = !mark.pending;
+    else if (st.act === "last") setMarked(!mark.last.marked);
     drawMark();
   }
   /** 自分が切った・鳴きの問いに答えた（submit から）。その場面を覚え、答える前に押していたら印を付ける。 */

@@ -233,8 +233,8 @@ button { font-family: inherit; color: inherit; }
   padding: 0 calc(var(--u) * 0.4); border-radius: calc(var(--u) * 0.5); font-weight: 800; font-size: max(9px, calc(var(--u) * 1.1)); line-height: 1.35;
   background: linear-gradient(135deg, #d9c8ff, #8f6bff); color: #1c0f45; box-shadow: 0 0 calc(var(--u) * 0.8) #a98bff;
 }
-/* 触れている牌と同じ種類の牌 */
-#board .tile.same .face { outline: calc(var(--u) * 0.3) solid #7fe7ff; outline-offset: calc(var(--u) * -0.05); animation: none; }
+/* 触れている牌と同じ種類の牌。animation を止めない（最後の捨て牌の落ちて着く動き .drop が、光が外れたときに最初からやり直しになる） */
+#board .tile.same .face { outline: calc(var(--u) * 0.3) solid #7fe7ff; outline-offset: calc(var(--u) * -0.05); }
 
 /* 手牌の上の帯（シャンテン数の札・フリテン・進む牌・待ち・狙える役） */
 .assist {
@@ -660,8 +660,13 @@ button { font-family: inherit; color: inherit; }
 
 /* ---------- 振り返り（仕様書 6.11章） ---------- */
 .home-pills { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
-/* 「迷った」のボタン（補助ボタンの並びの先頭）。印が付いている間は藤色、押せない間は薄く */
-#aux #markBtn { border-color: rgba(185, 166, 255, .6); color: #e3dbff; }
+/* 「迷った」のボタン（補助ボタンの並びの先頭）。印が付く予約の間は藤色、押せない間は薄く。
+   直前の場面に印が付いている間は右上に藤色の小さな丸（.done。ボタン自体は未選択の見た目のまま。ui.js の markState） */
+#aux #markBtn { position: relative; border-color: rgba(185, 166, 255, .6); color: #e3dbff; }
+#aux #markBtn.done::after {
+  content: "✓"; position: absolute; right: -5px; top: -6px; width: 15px; height: 15px; border-radius: 50%; pointer-events: none;
+  background: #a58bff; color: #1c0f45; font-size: 10px; font-weight: 800; line-height: 15px; text-align: center; box-shadow: 0 0 6px #b9a6ff;
+}
 #aux #markBtn.on { background: linear-gradient(#cbbcff, #7f62e0); border-color: #efe9ff; color: #1c0f45; font-weight: 700; }
 #aux #markBtn:disabled { opacity: .4; cursor: default; background: rgba(8, 20, 18, .75); }
 .bigbtn.mark-res { border-color: rgba(185, 166, 255, .6); color: #e3dbff; }
