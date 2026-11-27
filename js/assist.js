@@ -24,6 +24,7 @@
  *     yaku = 鳴いたあと狙える役 [{yaku, label, sure}]（chances と同じ形）。exact なら、たどった和了り方のどれかに付く役を全部
  *            （sure = どう和了っても付く）。exact でなければ「狙える役」と同じ条件の役。noYaku なら空。
  *   Assist.callYaku(pon や chi の配列) → その種類の鳴きで狙える役（鳴き方をまとめたもの）。
+ *   Assist.callRows(view) → 鳴きの問いの答え方ごとの表（振り返り用。形は関数の上のコメント）。
  *   Assist.yakuInfo(役名) → [読み, 一言の説明]。
  */
 (function (root, factory) {
@@ -506,5 +507,74 @@
     };
   }
 
-  return { analyze, tenpaiAfter, callInfo, callYaku, chances, toitoiShanten, visibleCounts, safeKinds, defense, isSuji, isKabe, DEF, evInput, evKey, yakuInfo, YAKU, CHANCE };
+  /** 鳴いた直後に切れない牌の種類（喰い替え）。game.js の kuikaeKinds と同じ（assist.js は calc.js しか読まないので写して持つ）。 */
+  function kuikaeKinds(type, called, own) {
+    if (type !== "chi") return [called];
+    const lo = Math.min(...own), hi = Math.max(...own);
+    if (called < lo) return called % 9 <= 5 ? [called, called + 3] : [called];
+    if (called > hi) return called % 9 >= 3 ? [called, called - 3] : [called];
+    return [called];
+  }
+  /** 13枚型（3n+1）の手 c の進む牌の合計枚数。 */
+  function ukeTotal(c, nm, vis) {
+    const s = MJ.shanten(c, nm);
+    let total = 0;
+    for (let j = 0; j < 34; j++) {
+      if (c[j] >= 4) continue;
+      c[j]++;
+      if (MJ.shanten(c, nm) < s) total += Math.max(0, 4 - vis[j]);
+      c[j]--;
+    }
+    return total;
+  }
+  /**
+   * 鳴きの問いの、答え方ごとの表（振り返り。仕様書 6.11章）。view.options.kind === "call" でなければ null。
+   * → [{type: "pass"|"ron"|"pon"|"chi"|"minkan", own: 手から出す牌の id（pass・ron は []）, shanten, total, noYaku, yaku, ron}]
+   *   pass: いまの手のシャンテン数と進む牌の枚数。ron: shanten = -1、ron = その牌で和了ったときの点数（tenpaiInfo の ron）。
+   *   pon・chi: 鳴いたあと、喰い替えでない牌でいちばん良く切ったときのシャンテン数と、そのうちいちばん多い進む牌の枚数。
+   *   minkan: カンしたあと（嶺上牌を引く前）の手のシャンテン数と進む牌の枚数。
+   *   noYaku・yaku は callInfo と同じ（pass・ron では noYaku = false、yaku は pass なら「狙える役」）。
+   */
+  function callRows(view) {
+    const o = view && view.options;
+    if (!o || o.kind !== "call") return null;
+    const seat = view.seat, hand = view.hand, ms = view.melds[seat];
+    const melds = calcMelds(ms), nm = melds.length;
+    const c = countsOf(hand), vis = visibleCounts(view), k = kindOf(o.tile);
+    const ctx = ctxOf(view, myRiichi(view));
+    const rows = [];
+    if (o.ron) {
+      const info = tenpaiInfo(c, melds, akaOf(hand, ms), ctx, vis, riverSet(view));
+      const w = info && info.waits.find(x => x.k === k);
+      rows.push({ type: "ron", own: [], shanten: -1, total: 0, noYaku: false, yaku: [], ron: w ? w.ron : null });
+    }
+    rows.push({ type: "pass", own: [], shanten: MJ.shanten(c, nm), total: ukeTotal(c, nm, vis), noYaku: false, yaku: chances(c, melds, ctx, vis, false), ron: null });
+    const info = callInfo(view);
+    const after = (type, x) => {
+      const c2 = c.slice();
+      for (const t of x.own) c2[kindOf(t)]--;
+      let shanten, total;
+      if (type === "minkan") { shanten = MJ.shanten(c2, nm + 1); total = ukeTotal(c2, nm + 1, vis); }
+      else {
+        const ban = kuikaeKinds(type, k, x.own.map(kindOf));
+        shanten = INF; total = 0;
+        for (let d = 0; d < 34; d++) {
+          if (!c2[d] || ban.includes(d)) continue;
+          c2[d]--;
+          const s = MJ.shanten(c2, nm + 1), t = ukeTotal(c2, nm + 1, vis);
+          c2[d]++;
+          if (s < shanten || (s === shanten && t > total)) { shanten = s; total = t; }
+        }
+      }
+      rows.push({ type, own: x.own.slice(), shanten, total, noYaku: x.noYaku, yaku: x.yaku, ron: null });
+    };
+    if (info) {
+      for (const x of info.pon) after("pon", x);
+      for (const x of info.chi) after("chi", x);
+      if (info.kan) after("minkan", info.kan);
+    }
+    return rows;
+  }
+
+  return { analyze, tenpaiAfter, callInfo, callYaku, callRows, chances, toitoiShanten, visibleCounts, safeKinds, defense, isSuji, isKabe, DEF, evInput, evKey, yakuInfo, YAKU, CHANCE };
 });

@@ -512,9 +512,9 @@
   }
 
   // ---------- Mortal の打牌のヒント（切る牌のヒントのまとまり。箱につながるときだけ） ----------
-  // 切る牌のヒントが切の席でも、自分が切る番には聞いておく（振り返りに残すため。画面には出さない。仕様書 6.11章）
+  // 切る牌のヒントが切の席でも、自分が切る番・鳴きの問いには聞いておく（振り返りに残すため。画面には出さない。仕様書 6.11章）
   function requestHint() {
-    if (!(mortalOk && mlog && canInput() && (myAssist().cut || v.options.kind === "turn"))) { mh = null; return; }
+    if (!(mortalOk && mlog && canInput())) { mh = null; return; } // 切の席でも、切る番・鳴きの問いには聞く（振り返りに残すため）
     if (mh && mh.ask === pkt.ask && mh.session === session) return;
     const my = mh = { ask: pkt.ask, session, done: false, data: null };
     Mortal.hint(mortalCl, mlog, v).then(d => { my.data = d; }).catch(e => console.warn("Mortal:", e.message)).finally(() => {
@@ -735,7 +735,8 @@
   }
 
   // ---------- 「迷った」の印（仕様書 6.11章） ----------
-  const myTurn = () => canInput() && v.options.kind === "turn";
+  // 切る番と鳴きの問い（ポン・チー・カン・ロン）のどちらでも、答える前に押せば答えた場面に付く（仕様書 6.11章「鳴きの判断の振り返り」）
+  const myTurn = () => canInput() && (v.options.kind === "turn" || v.options.kind === "call");
   /** いま押すと印が付く（外れる）場面があるか・付いているか。 */
   function markState() {
     if (myTurn()) return { can: true, on: mark.pending };
@@ -765,8 +766,8 @@
     else if (mark.last) setMarked(!mark.last.marked);
     drawMark();
   }
-  /** 自分が切った（submit から）。その場面を覚え、切る前に押していたら印を付ける。 */
-  function noteDiscard(action) {
+  /** 自分が切った・鳴きの問いに答えた（submit から）。その場面を覚え、答える前に押していたら印を付ける。 */
+  function noteAnswer(action) {
     let sc;
     try { sc = Review.scene(v, action, hintNow()); } catch (e) { console.error(e); return; }
     sc.n = ++mark.n;
@@ -798,15 +799,17 @@
     setTimeout(() => {
       if (my !== session || !pkt || pkt.ask !== ask) return;
       const now = autoChoice();
-      if (now) submit(now.action);
+      if (now) submit(now.action, true);
     }, speed(first.wait));
   }
 
   // ---------- 自分の入力 ----------
-  function submit(action) {
+  /** auto: 補助ボタン・立直後のツモ切りが答えた。「鳴かない」の自動の見送りは振り返りの場面にしない（本人が判断していないため。押すと直前の本人の答えに付く） */
+  function submit(action, auto) {
     if (!canInput()) return;
     const ask = pkt.ask;
-    if (action.type === "discard" && v.options.kind === "turn") noteDiscard(action);
+    if (action.type === "discard" && v.options.kind === "turn") noteAnswer(action);
+    else if (v.options.kind === "call" && !auto) noteAnswer(action);
     sentAsk = ask; uiMode = "normal"; selected = null; choices = [];
     render();
     port({ t: "act", ask, action });
@@ -1182,6 +1185,7 @@
   const AI_BEST = { hora: "ツモ", ankan: "カン", kakan: "カン", ryukyoku: "九種九牌" };
   function sceneHtml(sc) {
     const sv = sc.view, me = sv.seat;
+    const isCall = sc.kind === "call", asked = isCall ? sv.options.tile : null; // 鳴きの場面: 鳴くかを聞かれた牌（河で光らせる）
     const dora = sv.doraInd.map(t => MJ.doraOf(kindOf(t)));
     const dc = id => (isDora(id, dora) ? " dora" : "");
     const seatLine = (s, lab) => {
@@ -1189,7 +1193,7 @@
       const river = sv.rivers[s].map(e => {
         if (e.riichi) side = true; // 宣言牌が鳴かれたら、次の牌を横にする（盤面と同じ）
         if (e.called) return "";
-        const h = tile(e.id, (side ? "side" : "") + (e.tsumogiri ? " tg" : "") + dc(e.id));
+        const h = tile(e.id, (side ? "side" : "") + (e.tsumogiri ? " tg" : "") + dc(e.id) + (e.id === asked ? " asked" : ""));
         side = false;
         return h;
       }).join("");
@@ -1198,6 +1202,9 @@
         ${sv.riichi[s] ? '<span class="rc">リーチ</span>' : ""}</div>
         <div class="rv-river">${river}</div>${sv.melds[s].length ? `<div class="rv-melds">${sv.melds[s].map(m => meldHtml(m, s)).join("")}</div>` : ""}</div>`;
     };
+    const opp = [3, 2, 1].map(pos => seatLine((me + pos) % 4, SEAT_LABEL[pos])).join("");
+    const memo = `<textarea class="rv-memo" data-rv-memo rows="2" maxlength="${Review.MEMO_MAX}" placeholder="メモ">${esc(sc.memo || "")}</textarea>`;
+    if (isCall) return callSceneHtml(sc, opp + seatLine(me, SEAT_LABEL[0]), memo, dc);
     const cutCls = id => (id === sc.cut ? " cut" : "");
     const hand = sv.hand.map(id => tile(id, cutCls(id) + dc(id))).join("") +
       (sv.drawn !== null && sv.drawn !== undefined ? tile(sv.drawn, "drawn" + cutCls(sv.drawn) + dc(sv.drawn)) : "");
@@ -1230,13 +1237,46 @@
     const ukeLine = !sel ? "" : `<div class="rv-uke"><span class="lab">${tileBy(sel.k, sel.red)}を切ると、${sel.shanten <= 0 ? "待ち" : "進む牌"}（${sel.total}枚）</span>
       <div class="tiles">${sel.uke.map(u => `<span class="u">${kindTile(u.k)}<b>${u.left}</b></span>`).join("") || "なし"}</div></div>`;
     const aiNote = sc.aiBest && AI_BEST[sc.aiBest] ? `<div class="rv-note">AI のいちばんは「${AI_BEST[sc.aiBest]}」</div>` : "";
-    const opp = [3, 2, 1].map(pos => seatLine((me + pos) % 4, SEAT_LABEL[pos])).join("");
     return `<div class="rv-info">${roundName(sv)}${sv.honba ? ` ${sv.honba}本場` : ""}<span>この局の${sv.rivers[me].length + 1}打目</span><span>残り ${sv.liveLeft}</span>
         <span class="rv-dora">ドラ表示 ${sv.doraInd.map(t => tile(t)).join("")}</span></div>
       <div class="rv-board">${opp}${seatLine(me, SEAT_LABEL[0])}</div>
       <div class="rv-hand">${hand}</div>
-      <textarea class="rv-memo" data-rv-memo rows="2" maxlength="${Review.MEMO_MAX}" placeholder="メモ">${esc(sc.memo || "")}</textarea>
+      ${memo}
       ${table}${ukeLine}${aiNote}`;
+  }
+  const CALL_NAME = { pass: "鳴かない", ron: "ロン", pon: "ポン", chi: "チー", minkan: "カン" };
+  /** 鳴きの場面（仕様書 6.11章「鳴きの判断の振り返り」）: 盤面・聞かれた牌・答え方ごとの表。期待値は出さない。 */
+  function callSceneHtml(sc, board, memo, dc) {
+    const sv = sc.view, me = sv.seat, o = sv.options;
+    const rows = Review.callRows(sc);
+    const hasAi = !!sc.aiBest;
+    const topUke = Math.max(0, ...rows.filter(r => r.type !== "ron" && r.shanten === Math.min(...rows.filter(x => x.type !== "ron").map(x => x.shanten))).map(r => r.total));
+    const yakuHtml = list => list.map(y => {
+      const info = Assist.yakuInfo(y.yaku);
+      return `<span class="a-yaku ${y.sure ? "sure" : ""}" title="${info ? esc(info[1]) : ""}">${esc(y.label)}</span>`;
+    }).join("");
+    const yakuCell = r => {
+      if (r.type === "ron") return r.ron ? `<span class="rv-pt">${r.ron.points}</span>${yakuPills(r.ron)}` : '<span class="rv-bad">役なし</span>';
+      if (r.noYaku) return '<span class="rv-bad">役なし</span>';
+      return yakuHtml(r.yaku) || "—";
+    };
+    const table = !rows.length ? "" : `<div class="st-wrap"><table class="rv-table rv-call">
+      <tr><th>答え</th><th>鳴いたあと</th><th>受け入れ</th><th>役</th>${hasAi ? "<th>AI</th>" : ""}</tr>
+      ${rows.map(r => `<tr class="${r.act ? "cut" : ""}">
+        <th><span class="rv-k"><span class="rv-cn">${CALL_NAME[r.type]}</span>${r.own.length && r.type !== "minkan" ? `<span class="rv-own">${r.own.slice().sort(Mahjong.byTile).map(t => tile(t)).join("")}</span>` : ""}${r.act ? '<span class="rv-cut">答えた</span>' : ""}</span></th>
+        <td>${r.type === "ron" ? "和了" : r.shanten <= 0 ? "テンパイ" : r.shanten + "シャンテン"}</td>
+        <td class="${r.type !== "ron" && r.total === topUke && topUke > 0 ? "top" : ""}">${r.type === "ron" ? "—" : r.total + "枚"}</td>
+        <td class="rv-yk">${yakuCell(r)}</td>
+        ${hasAi ? `<td>${r.ai ? '<i class="rv-ai r1">1</i>' : ""}</td>` : ""}
+      </tr>`).join("")}</table></div>`;
+    const from = (o.from - me + 4) % 4;
+    const hand = sv.hand.map(id => tile(id, dc(id))).join("");
+    return `<div class="rv-info">${roundName(sv)}${sv.honba ? ` ${sv.honba}本場` : ""}<span>鳴きの判断</span><span>残り ${sv.liveLeft}</span>
+        <span class="rv-dora">ドラ表示 ${sv.doraInd.map(t => tile(t)).join("")}</span></div>
+      <div class="rv-board">${board}</div>
+      <div class="rv-hand">${hand}<span class="rv-asked"><span class="lab">${SEAT_LABEL[from]}の</span>${tile(o.tile, "asked" + dc(o.tile))}</span></div>
+      ${memo}
+      ${table}`;
   }
   function drawReview() {
     const g = rv.gid ? rvGame() : null;

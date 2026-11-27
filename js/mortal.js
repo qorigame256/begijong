@@ -240,7 +240,7 @@
 
   /**
    * 打牌のヒント。自分の番なら {kind: "turn", best: 行動, discards: [{id, q}]（評価の高い順）, riichi: 立直がいちばんなら切る牌の id}、
-   * 鳴きの問いなら {kind: "call", best: "ron"|"pon"|"chi"|"kan"|"pass"}。q は Mortal の評価値（大きいほど良い）。
+   * 鳴きの問いなら {kind: "call", best: "ron"|"pon"|"chi"|"kan"|"pass", own: ポン・チーで手から出す牌の id の配列 | null}。q は Mortal の評価値（大きいほど良い）。
    */
   async function hint(cl, log, view) {
     const o = view.options;
@@ -252,7 +252,9 @@
     const q = qMap(r.meta);
     if (o.kind !== "turn") {
       const best = r.type === "hora" ? "ron" : r.type === "daiminkan" ? "kan" : r.type === "pon" || r.type === "chi" ? r.type : "pass";
-      return { kind: "call", best, tiles: r.consumed || null };
+      // own: ポン・チーで手から出すとした牌の id（選択肢の中から。振り返りで鳴き方の行に印を付ける）
+      const own = best === "pon" ? o.pon.find(x => sameTiles(x, r.consumed)) : best === "chi" ? o.chi.find(x => sameTiles(x, r.consumed)) : null;
+      return { kind: "call", best, tiles: r.consumed || null, own: own || null };
     }
     const discards = [];
     const seen = new Set();

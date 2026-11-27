@@ -732,4 +732,14 @@ button { font-family: inherit; color: inherit; }
 .rv-uke .u .tile { --w: 2.6; }
 .rv-uke .u b { font-size: 12px; color: #e9dfc4; }
 .rv-note { margin-top: 10px; font-size: 13px; color: #cbbcff; }
+/* 鳴きの場面（仕様書 6.11章「鳴きの判断の振り返り」）: 聞かれた牌・答え方ごとの表 */
+.rv-river .tile.asked .face, .rv-asked .tile .face { outline: calc(var(--u) * 0.35) solid #ffd76a; outline-offset: 1px; }
+.rv-asked { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; margin-left: calc(var(--u) * 2.4); }
+.rv-asked .lab { font-size: 12px; color: #a9b8b2; }
+.rv-call .rv-cn { min-width: 4em; color: #f2ead8; }
+.rv-call .rv-own { display: inline-flex; gap: 1px; }
+.rv-call td.rv-yk, .rv-call tr:first-child th:nth-child(4) { text-align: left; white-space: normal; }
+.rv-call td.rv-yk .a-yaku { margin: 1px 3px 1px 0; }
+.rv-call .rv-pt { margin-right: 8px; color: #ffe08a; font-weight: 700; }
+.rv-call .rv-bad { color: #ff9f8f; }
 @media (max-width: 700px) { .rv-seat { grid-template-columns: 1fr; gap: 4px; } }
