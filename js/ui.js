@@ -112,7 +112,8 @@
   let reviews = loadReviews();
   // いまの対局の印。game: 記録中の対局（初めて印を付けたときに作る）、pending: 自分が切る番に押した（切ったら印を付ける）、
   // last: 直前に切った場面 {scene, marked}（次に自分が切る番が来るか、次の局が始まるまで印を付け外しできる）、n: 打牌の通し番号
-  const mark = { game: null, pending: false, last: null, n: 0 };
+  // round: この局の自分の答え（{scene, marked, auto}。古い順。最後が last）。listOpen: 「…」の一覧を開いているか
+  const mark = { game: null, pending: false, last: null, n: 0, round: [], listOpen: false };
 
   // ---------- 牌操作の設定パネル ----------
   const SEAT_LABEL = ["あなた", "下家", "対面", "上家"];
@@ -275,6 +276,8 @@
   const board = $("#board"), bubbles = $("#bubbles");
   const posOf = seat => (seat - ME + 4) % 4;
   const canInput = () => !!(v && v.options && sentAsk !== pkt.ask);
+  /** 問いを画面に出すか。補助ボタンの「鳴かない」ですぐ見送る問いは出さない（autoAct が次の一瞬で答えるので、出すとボタンが一瞬だけ見えてちらつく） */
+  const asking = () => { if (!canInput()) return false; const c = autoChoice(); return !(c && c.wait === 0); };
 
   function bubble(seat, text, cls) {
     const el = document.createElement("div");
@@ -302,7 +305,7 @@
     stopEv();
     mlog = mh = null;
     auto.win = auto.tsumogiri = auto.noCall = false;
-    mark.game = mark.last = null; mark.pending = false; mark.n = 0;
+    mark.game = mark.last = null; mark.pending = false; mark.n = 0; mark.round = []; mark.listOpen = false;
     $("#reviewModal").classList.add("hidden");
     drawAux();
     bubbles.innerHTML = "";
@@ -347,7 +350,7 @@
       if (e.t === "start") {
         bubble(-1, roundName(e) + (e.honba ? ` ${e.honba}本場` : ""), "round");
         auto.win = auto.tsumogiri = auto.noCall = false;
-        mark.pending = false; mark.last = null; // 前の局の打牌には、もう印を付けない
+        mark.pending = false; mark.last = null; mark.round = []; mark.listOpen = false; // 前の局の打牌には、もう印を付けない
         drawAux();
         Sound.se("start");
       } else if (e.t === "call") { bubble(e.seat, CALL[e.type]); Sound.se("call"); }
@@ -418,7 +421,7 @@
     const rv = v.rivers[seat], cells = [];
     let side = false;
     // 鳴き（ポン・チー・カン・ロン）を聞かれている間、その捨て牌を強調する（仕様書 6章⑭。槍槓の牌は河に無い）
-    const o = canInput() && v.options.kind === "call" && !v.options.chankan && v.options.from === seat ? v.options : null;
+    const o = asking() && v.options.kind === "call" && !v.options.chankan && v.options.from === seat ? v.options : null;
     rv.forEach((e, i) => {
       if (e.riichi) side = true; // 宣言牌が鳴かれたら、次の牌を横にする
       if (e.called) return;
@@ -675,7 +678,7 @@
   }
   /** 鳴きの前の知らせ（立直できなくなる・役が無くなる・鳴いたあと狙える役）。 */
   function callNoteHtml() {
-    if (!callAsst || !canInput() || v.options.kind !== "call") return "";
+    if (!callAsst || !asking() || v.options.kind !== "call") return "";
     const lines = [];
     if (callAsst.loseRiichi) lines.push(["soft", "鳴くとリーチできなくなります"]);
     const types = [["ポン", callAsst.pon], ["チー", callAsst.chi], ["カン", callAsst.kan ? [callAsst.kan] : []]].filter(x => x[1].length);
@@ -697,7 +700,7 @@
   }
 
   function actionsHtml() {
-    if (!canInput()) return "";
+    if (!asking()) return "";
     const o = v.options;
     const b = [];
     const hd = hintShown(); // Mortal のおすすめの行動のボタンに「AI」の印
@@ -738,7 +741,7 @@
   // 切る番と鳴きの問い（ポン・チー・カン・ロン）のどちらでも、答える前に押せば答えた場面に付く（仕様書 6.11章「鳴きの判断の振り返り」）
   // 直前の場面に印が付いたら、ボタンは未選択の見た目に戻し（付いたことは右上の小さな印 .done）、他家の番に押すと次の自分の判断への予約（mark.pending）に
   // なる（本人決定 2026-11-27。前は押すと直前の印が外れ、他家の番に次の判断へ付けようとすると「付いている」に見えた）。直前の印を外すのは局の結果の板と振り返り
-  const myTurn = () => canInput() && (v.options.kind === "turn" || v.options.kind === "call");
+  const myTurn = () => asking() && (v.options.kind === "turn" || v.options.kind === "call");
   const lastMarked = () => !!(mark.last && mark.last.marked);
   /** 押すと何が起きるか（"pending" 予約の付け外し・"last" 直前の場面の付け外し・null 押せない）と、ボタンを点けるか・直前に付いた印を出すか。 */
   function markState() {
@@ -753,10 +756,33 @@
     b.classList.toggle("on", !!st.act && st.on);
     b.classList.toggle("done", st.done);
     for (const r of document.querySelectorAll("#overlay [data-mark]")) r.classList.toggle("on", lastMarked());
+    drawMarkList();
   }
-  /** 直前に切った場面に印を付ける（外す）。付けた・外したら端末に残す。 */
-  function setMarked(on) {
-    const l = mark.last;
+  // 「…」の一覧（本人決定 2026-11-27。3案から本人が選んだ）: この局の自分の判断（打牌・鳴きの問いへの答え）を新しい順に並べ、押すとその場面に印を付ける・外す
+  const CALL_ANS = { pass: "見送り", ron: "ロン", pon: "ポン", chi: "チー", minkan: "カン" };
+  function drawMarkList() {
+    const lb = $("#markListBtn"), box = $("#markList");
+    lb.disabled = !mark.round.length;
+    if (!mark.round.length) mark.listOpen = false;
+    lb.classList.toggle("on", mark.listOpen);
+    box.classList.toggle("hidden", !mark.listOpen);
+    if (!mark.listOpen) return;
+    let turn = 0;
+    const rows = mark.round.map((e, i) => {
+      const sc = e.scene;
+      let what;
+      if (sc.kind === "call") what = `<span class="ml-k">鳴き</span>${tile(sc.view.options.tile)}<span>${CALL_ANS[sc.act.type] || ""}</span>`;
+      else what = `<span class="ml-k">${++turn}打目</span>${tile(sc.cut)}<span>${sc.riichi ? "リーチ" : e.auto ? "自動で切り" : "切り"}</span>`;
+      return `<button type="button" class="ml-row ${e.marked ? "on" : ""}" data-ml="${i}">${what}<i class="ml-mk">迷った</i></button>`;
+    }).reverse();
+    const list = box.querySelector(".ml-list"), top = list ? list.scrollTop : 0;
+    box.innerHTML = `<div class="ml-head">この局の判断<button type="button" class="ml-x" data-ml-close>×</button></div><div class="ml-list">${rows.join("")}</div>`;
+    box.querySelector(".ml-list").scrollTop = top; // 描き直しても見ていた位置のまま
+  }
+  /** 直前に切った場面に印を付ける（外す）。 */
+  const setMarked = on => setEntry(mark.last, on);
+  /** この局の答え l の場面に印を付ける（外す）。付けた・外したら端末に残す。 */
+  function setEntry(l, on) {
     if (!l || l.marked === on) return;
     if (on) {
       if (!mark.game) mark.game = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), at: Date.now(), seat: ME, names: v.names.slice(), length: v.length, scenes: [] };
@@ -773,12 +799,13 @@
     else if (st.act === "last") setMarked(!mark.last.marked);
     drawMark();
   }
-  /** 自分が切った・鳴きの問いに答えた（submit から）。その場面を覚え、答える前に押していたら印を付ける。 */
-  function noteAnswer(action) {
+  /** 自分が切った・鳴きの問いに答えた（submit から。auto: 立直後のツモ切り・補助ボタンが答えた）。その場面を覚え、答える前に押していたら印を付ける。 */
+  function noteAnswer(action, auto) {
     let sc;
     try { sc = Review.scene(v, action, hintNow()); } catch (e) { console.error(e); return; }
     sc.n = ++mark.n;
-    mark.last = { scene: sc, marked: false };
+    mark.last = { scene: sc, marked: false, auto: !!auto };
+    mark.round.push(mark.last);
     if (mark.pending) { mark.pending = false; setMarked(true); }
   }
   /** いまの問いに補助ボタンの設定で自動で答えるなら {action, wait}。答えないなら null。 */
@@ -815,7 +842,7 @@
   function submit(action, auto) {
     if (!canInput()) return;
     const ask = pkt.ask;
-    if (action.type === "discard" && v.options.kind === "turn") noteAnswer(action);
+    if (action.type === "discard" && v.options.kind === "turn") noteAnswer(action, auto);
     else if (v.options.kind === "call" && !auto) noteAnswer(action);
     sentAsk = ask; uiMode = "normal"; selected = null; choices = [];
     render();
@@ -902,6 +929,12 @@
   });
   board.addEventListener("pointerleave", () => setHover(null, null));
   $("#markBtn").addEventListener("click", () => onMark());
+  $("#markListBtn").addEventListener("click", () => { mark.listOpen = !mark.listOpen; drawMark(); });
+  $("#markList").addEventListener("click", e => {
+    if (e.target.closest("[data-ml-close]")) { mark.listOpen = false; return drawMark(); }
+    const r = e.target.closest("[data-ml]"), l = r && mark.round[+r.dataset.ml];
+    if (l) { setEntry(l, !l.marked); drawMark(); }
+  });
   $("#aux").addEventListener("click", e => {
     const b = e.target.closest("[data-auto]");
     if (!b) return;
@@ -1015,7 +1048,9 @@
       `<li data-yaku="${esc(y[0])}"><span>${esc(y[0])}</span><b>${w.yakuman ? "役満" : y[1] + "飜"}</b></li>`).join("");
     const name = limitName(w);
     const [pts, unit] = pointsText(w);
-    const head = w.yakuman ? name : `${w.fu}符${w.han}飜${name ? "　" + name : ""}`;
+    // 満貫〜役満の文字の色（本人の注文 2026-11-27。style.css の .lim）。数え役満も役満と同じ見た目
+    const lim = !name ? "" : `<span class="lim ${w.yakuman || w.han >= 13 ? "yakuman" : { 満貫: "mangan", 跳満: "haneman", 倍満: "baiman", 三倍満: "sanbaiman" }[name]}">${name}</span>`;
+    const head = w.yakuman ? lim : `${w.fu}符${w.han}飜${lim ? "　" + lim : ""}`;
     return `<div class="res-win">
       <div class="res-title"><span class="how">${w.tsumo ? "ツモ" : "ロン"}</span><span class="who">${esc(v.names[w.seat])}</span>
         ${w.tsumo ? "" : `<span class="from">← ${esc(v.names[w.from])}</span>`}</div>
@@ -1138,9 +1173,10 @@
     if (!mark.game) return;
     const g = reviews.games.find(x => x.id === mark.game.id) || null;
     mark.game = g;
-    if (mark.last && mark.last.marked) {
-      const s = g && g.scenes.find(x => x.n === mark.last.scene.n);
-      if (s) mark.last.scene = s; else mark.last.marked = false;
+    for (const l of mark.round) {
+      if (!l.marked) continue;
+      const s = g && g.scenes.find(x => x.n === l.scene.n);
+      if (s) l.scene = s; else l.marked = false;
     }
     drawMark();
   }
